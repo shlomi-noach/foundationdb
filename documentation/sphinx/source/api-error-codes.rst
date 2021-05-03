@@ -32,15 +32,23 @@ FoundationDB may return the following error codes from API functions. If you nee
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | accessed_unreadable                           | 1036| Read or wrote an unreadable key                                                |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| process_behind                                | 1037| Storage process does not have recent mutations                                 |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | database_locked                               | 1038| Database is locked                                                             |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | cluster_version_changed                       | 1039| Cluster has been upgraded to a new protocol version                            |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | external_client_already_loaded                | 1040| External client has already been loaded                                        |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| proxy_memory_limit_exceeded                   | 1042| CommitProxy commit memory limit exceeded                                       |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| batch_transaction_throttled                   | 1051| Batch GRV request rate limit exceeded                                          |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | operation_cancelled                           | 1101| Asynchronous operation cancelled                                               |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | future_released                               | 1102| Future has been released                                                       |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| tag_throttled                                 | 1213| Transaction tag is being throttled                                             |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | platform_error                                | 1500| Platform error                                                                 |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
@@ -100,11 +108,17 @@ FoundationDB may return the following error codes from API functions. If you nee
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | transaction_invalid_version                   | 2020| Transaction does not have a valid commit version                               |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
-| transaction_read_only                         | 2021| Transaction is read-only and therefore does not have a commit version          |
+| no_commit_version                             | 2021| Transaction is read-only and therefore does not have a commit version          |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | environment_variable_network_option_failed    | 2022| Environment variable network option could not be set                           |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | transaction_read_only                         | 2023| Attempted to commit a transaction specified as read-only                       |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| invalid_cache_eviction_policy                 | 2024| Invalid cache eviction policy, only random and lru are supported               |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| network_cannot_be_restarted                   | 2025| Network can only be started once                                               |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| blocked_from_network_thread                   | 2026| Detected a deadlock in a callback called from the network thread               |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | incompatible_protocol_version                 | 2100| Incompatible protocol version                                                  |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
@@ -123,6 +137,28 @@ FoundationDB may return the following error codes from API functions. If you nee
 | tls_error                                     | 2107| TLS error                                                                      |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | unsupported_operation                         | 2108| Operation is not supported                                                     |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| too_many_tags                                 | 2109| Too many tags set on transaction                                               |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| tag_too_long                                  | 2110| Tag set on transaction is too long                                             |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| too_many_tag_throttles                        | 2111| Too many tag throttles have been created                                       |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| special_keys_cross_module_read                | 2112| Special key space range read crosses modules.                                  |
+|                                               |     | Refer to the ``SPECIAL_KEY_SPACE_RELAXED`` transaction option for more details.|
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| special_keys_no_module_found                  | 2113| Special key space range read does not intersect a module.                      |
+|                                               |     | Refer to the ``SPECIAL_KEY_SPACE_RELAXED`` transaction option for more details.|
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| special_keys_write_disabled                   | 2114| Special key space is not allowed to write by default. Refer                    |
+|                                               |     | to the ``SPECIAL_KEY_SPACE_ENABLE_WRITES`` transaction option for more details.|
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| special_keys_no_write_module_found            | 2115| Special key space key or keyrange in set or clear does not intersect a module. |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| special_keys_cross_module_write               | 2116| Special key space clear crosses modules                                        |
++-----------------------------------------------+-----+--------------------------------------------------------------------------------+
+| special_keys_api_failure                      | 2117| Api call through special keys failed. For more information, read the           |
+|                                               |     | ``0xff0xff/error_message`` key                                                 |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+
 | api_version_unset                             | 2200| API version is not set                                                         |
 +-----------------------------------------------+-----+--------------------------------------------------------------------------------+

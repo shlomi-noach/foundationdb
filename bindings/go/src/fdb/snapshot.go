@@ -28,7 +28,7 @@ package fdb
 // transaction conflicts but making it harder to reason about concurrency.
 //
 // For more information on snapshot reads, see
-// https://www.foundationdb.org/documentation/developer-guide.html#snapshot-reads.
+// https://apple.github.io/foundationdb/developer-guide.html#snapshot-reads.
 type Snapshot struct {
 	*transaction
 }
@@ -85,4 +85,26 @@ func (s Snapshot) GetReadVersion() FutureInt64 {
 // interacting.
 func (s Snapshot) GetDatabase() Database {
 	return s.transaction.db
+}
+
+// GetEstimatedRangeSizeBytes returns an estimate for the number of bytes
+// stored in the given range.
+func (s Snapshot) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
+	beginKey, endKey := r.FDBRangeKeys()
+	return s.getEstimatedRangeSizeBytes(
+		beginKey.FDBKey(),
+		endKey.FDBKey(),
+	)
+}
+
+// GetRangeSplitPoints returns a list of keys that can split the given range
+// into (roughly) equally sized chunks based on chunkSize.
+// Note: the returned split points contain the start key and end key of the given range.
+func (s Snapshot) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray {
+	beginKey, endKey := r.FDBRangeKeys()
+	return s.getRangeSplitPoints(
+		beginKey.FDBKey(),
+		endKey.FDBKey(),
+		chunkSize,
+	)
 }

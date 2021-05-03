@@ -21,7 +21,6 @@
 #include "flow/flow.h"
 #include "flow/network.h"
 
-
 #ifdef __linux__
 
 #include <execinfo.h>
@@ -31,22 +30,25 @@
 #include <sys/syscall.h>
 #include <link.h>
 
-#include "Platform.h"
+#include "flow/Platform.h"
+#include "flow/actorcompiler.h" // This must be the last include.
 
-extern volatile int profilingEnabled;
+extern volatile thread_local int profilingEnabled;
 
-static uint64_t gettid() { return syscall(__NR_gettid); }
+static uint64_t sys_gettid() {
+	return syscall(__NR_gettid);
+}
 
 struct SignalClosure {
-	void (* func)(int, siginfo_t*, void*, void*);
-	void *userdata;
+	void (*func)(int, siginfo_t*, void*, void*);
+	void* userdata;
 
-	SignalClosure(void(*func)(int, siginfo_t*, void*, void*), void* userdata) : func(func), userdata(userdata) {}
+	SignalClosure(void (*func)(int, siginfo_t*, void*, void*), void* userdata) : func(func), userdata(userdata) {}
 
 	static void signal_handler(int s, siginfo_t* si, void* ucontext) {
 		// async signal safe!
-		// This is intended to work as a SIGPROF handler for past and future versions of the flow profiler (when multiple are running in a process!)
-		// So don't change what it does without really good reason
+		// This is intended to work as a SIGPROF handler for past and future versions of the flow profiler (when
+		// multiple are running in a process!) So don't change what it does without really good reason
 		SignalClosure* closure = (SignalClosure*)(si->si_value.sival_ptr);
 		closure->func(s, si, ucontext, closure->userdata);
 	}
@@ -54,43 +56,42 @@ struct SignalClosure {
 
 struct SyncFileForSim : ReferenceCounted<SyncFileForSim> {
 	FILE* f;
-	SyncFileForSim( std::string const& filename ) {
-		f = fopen(filename.c_str(), "wb");
-	}
+	SyncFileForSim(std::string const& filename) { f = fopen(filename.c_str(), "wb"); }
 
-	virtual void addref() { ReferenceCounted<SyncFileForSim>::addref(); }
-	virtual void delref() { ReferenceCounted<SyncFileForSim>::delref(); }
+	bool isOpen() const { return f != nullptr; }
 
-	virtual int64_t debugFD() { return (int64_t)f; }
+	int64_t debugFD() const { return (int64_t)f; }
 
-	virtual Future<int> read( void* data, int length, int64_t offset ) {
+	Future<int> read(void* data, int length, int64_t offset) {
 		ASSERT(false);
 		throw internal_error();
 	}
 
-	virtual Future<Void> write( void const* data, int length, int64_t offset ) {
+	Future<Void> write(void const* data, int length, int64_t offset) {
+		ASSERT(isOpen());
 		fseek(f, offset, SEEK_SET);
 		if (fwrite(data, 1, length, f) != length)
 			throw io_error();
 		return Void();
 	}
 
-	virtual Future<Void> truncate( int64_t size ) {
-		ASSERT( size == 0 );
+	Future<Void> truncate(int64_t size) {
+		ASSERT(size == 0);
 		return Void();
 	}
 
-	virtual Future<Void> flush() {
+	Future<Void> flush() {
+		ASSERT(isOpen());
 		fflush(f);
 		return Void();
 	}
 
-	virtual Future<Void> sync() {
+	Future<Void> sync() {
 		ASSERT(false);
 		throw internal_error();
 	}
 
-	virtual Future<int64_t> size() {
+	Future<int64_t> size() const {
 		ASSERT(false);
 		throw internal_error();
 	}
@@ -98,20 +99,18 @@ struct SyncFileForSim : ReferenceCounted<SyncFileForSim> {
 
 struct Profiler {
 	struct OutputBuffer {
-		std::vector< void* > output;
+		std::vector<void*> output;
 
-		OutputBuffer() {
-			output.reserve( 100000 );
-		}
+		OutputBuffer() { output.reserve(100000); }
 		void clear() { output.clear(); }
-		void push( void* ptr ) {  // async signal safe!
+		void push(void* ptr) { // async signal safe!
 			if (output.size() < output.capacity())
 				output.push_back(ptr);
 		}
-		Future<Void> writeTo( Reference<SyncFileForSim> file, int64_t& offset ) {
+		Future<Void> writeTo(Reference<SyncFileForSim> file, int64_t& offset) {
 			int64_t offs = offset;
-			offset += sizeof(void*)*output.size();
-			return file->write( &output[0], sizeof(void*)*output.size(), offs );
+			offset += sizeof(void*) * output.size();
+			return file->write(&output[0], sizeof(void*) * output.size(), offs);
 		}
 	};
 
@@ -125,54 +124,68 @@ struct Profiler {
 	static Profiler* active_profiler;
 	BinaryWriter environmentInfoWriter;
 	INetwork* network;
-	timer_t periodic_timer;
+	timer_t periodicTimer;
+	bool timerInitialized;
 
-	Profiler(int period, std::string const& outfn, INetwork* network) : environmentInfoWriter(Unversioned()), signalClosure(signal_handler_for_closure, this), network(network) {
+	Profiler(int period, std::string const& outfn, INetwork* network)
+	  : environmentInfoWriter(Unversioned()), signalClosure(signal_handler_for_closure, this), network(network),
+	    timerInitialized(false) {
 		actor = profile(this, period, outfn);
 	}
 
 	~Profiler() {
 		enableSignal(false);
-		timer_delete(periodic_timer);
+
+		if (timerInitialized) {
+			timer_delete(periodicTimer);
+		}
 	}
 
-	void signal_handler() {  // async signal safe!
-		if(profilingEnabled) {
+	void signal_handler() { // async signal safe!
+		static std::atomic<bool> inSigHandler = false;
+		if (inSigHandler.exchange(true)) { return; }
+		if (profilingEnabled) {
 			double t = timer();
 			output_buffer->push(*(void**)&t);
 			size_t n = platform::raw_backtrace(addresses, 256);
-			for(int i=0; i<n; i++)
+			for (int i = 0; i < n; i++)
 				output_buffer->push(addresses[i]);
 			output_buffer->push((void*)-1LL);
 		}
+		inSigHandler.store(false);
 	}
 
-	static void signal_handler_for_closure(int, siginfo_t* si, void*, void* self) {  // async signal safe!
+	static void signal_handler_for_closure(int, siginfo_t* si, void*, void* self) { // async signal safe!
 		((Profiler*)self)->signal_handler();
 	}
 
-	void enableSignal(bool enabled) {
-		sigprocmask( enabled?SIG_UNBLOCK:SIG_BLOCK, &profilingSignals, NULL );
-	}
+	void enableSignal(bool enabled) { sigprocmask(enabled ? SIG_UNBLOCK : SIG_BLOCK, &profilingSignals, nullptr); }
 
-	void phdr( struct dl_phdr_info* info ) {
-		environmentInfoWriter << int64_t(1) << info->dlpi_addr << StringRef((const uint8_t*)info->dlpi_name, strlen(info->dlpi_name));
-		for(int s=0; s<info->dlpi_phnum; s++) {
+	void phdr(struct dl_phdr_info* info) {
+		environmentInfoWriter << int64_t(1) << info->dlpi_addr
+		                      << StringRef((const uint8_t*)info->dlpi_name, strlen(info->dlpi_name));
+		for (int s = 0; s < info->dlpi_phnum; s++) {
 			auto const& h = info->dlpi_phdr[s];
-			environmentInfoWriter << int64_t(2)
-				<< h.p_type << h.p_flags  // Word (uint32_t)
-				<< h.p_offset  // Off (uint64_t)
-				<< h.p_vaddr << h.p_paddr  // Addr (uint64_t)
-				<< h.p_filesz << h.p_memsz << h.p_align;  // XWord (uint64_t)
+			environmentInfoWriter << int64_t(2) << h.p_type << h.p_flags // Word (uint32_t)
+			                      << h.p_offset // Off (uint64_t)
+			                      << h.p_vaddr << h.p_paddr // Addr (uint64_t)
+			                      << h.p_filesz << h.p_memsz << h.p_align; // XWord (uint64_t)
 		}
 	}
 
-	static int phdr_callback(struct dl_phdr_info *info, size_t size, void *data) {
+	static int phdr_callback(struct dl_phdr_info* info, size_t size, void* data) {
 		((Profiler*)data)->phdr(info);
 		return 0;
 	}
 
 	ACTOR static Future<Void> profile(Profiler* self, int period, std::string outfn) {
+		// Open and truncate output file
+		state Reference<SyncFileForSim> outFile = makeReference<SyncFileForSim>(outfn);
+		if (!outFile->isOpen()) {
+			TraceEvent(SevWarn, "FailedToOpenProfilingOutputFile").detail("Filename", outfn).GetLastError();
+			return Void();
+		}
+
 		// According to folk wisdom, calling this once before setting up the signal handler makes
 		// it async signal safe in practice :-/
 		platform::raw_backtrace(self->addresses, MAX_STACK_DEPTH);
@@ -180,8 +193,8 @@ struct Profiler {
 		// Write environment information header
 		// At the moment this consists of the output of dl_iterate_phdr, the locations of
 		// all shared objects loaded into this process (to help locate symbols) and the period in ns
-		self->environmentInfoWriter << int64_t(0x101) << int64_t(period*1000);
-		dl_iterate_phdr( phdr_callback, self );
+		self->environmentInfoWriter << int64_t(0x101) << int64_t(period * 1000);
+		dl_iterate_phdr(phdr_callback, self);
 		self->environmentInfoWriter << int64_t(0);
 		while (self->environmentInfoWriter.getLength() % sizeof(void*))
 			self->environmentInfoWriter << uint8_t(0);
@@ -190,74 +203,72 @@ struct Profiler {
 		state OutputBuffer* otherBuffer = new OutputBuffer;
 
 		// The profilingSignals signal set will be used by enableSignal
-		sigemptyset( &self->profilingSignals );
-		sigaddset( &self->profilingSignals, SIGPROF );
+		sigemptyset(&self->profilingSignals);
+		sigaddset(&self->profilingSignals, SIGPROF);
 
 		// Set up profiling signal handler
 		struct sigaction act;
 		act.sa_sigaction = SignalClosure::signal_handler;
 		sigemptyset(&act.sa_mask);
 		act.sa_flags = SA_SIGINFO;
-		sigaction( SIGPROF, &act, NULL );
+		sigaction(SIGPROF, &act, nullptr);
 
 		// Set up periodic profiling timer
-		if (0) {
-			itimerval tv;
-			sigevent sev;
-			setitimer( ITIMER_PROF, &tv, NULL );
-			tv.it_interval.tv_sec = 0;
-			tv.it_interval.tv_usec = period;
-			tv.it_value.tv_sec = 0;
-			tv.it_value.tv_usec = g_nondeterministic_random->randomInt(period/2,period+1);
-			setitimer( ITIMER_PROF, &tv, NULL );
-		} else {
-			int period_ns = period * 1000;
-			itimerspec tv;
-			tv.it_interval.tv_sec = 0;
-			tv.it_interval.tv_nsec = period_ns;
-			tv.it_value.tv_sec = 0;
-			tv.it_value.tv_nsec = g_nondeterministic_random->randomInt(period_ns/2,period_ns+1);
+		int period_ns = period * 1000;
+		itimerspec tv;
+		tv.it_interval.tv_sec = 0;
+		tv.it_interval.tv_nsec = period_ns;
+		tv.it_value.tv_sec = 0;
+		tv.it_value.tv_nsec = nondeterministicRandom()->randomInt(period_ns / 2, period_ns + 1);
 
-			sigevent sev;
-			sev.sigev_notify = SIGEV_THREAD_ID;
-			sev.sigev_signo = SIGPROF;
-			sev.sigev_value.sival_ptr = &(self->signalClosure);
-			sev._sigev_un._tid = gettid();
-			timer_create( CLOCK_THREAD_CPUTIME_ID, &sev, &self->periodic_timer );
-			timer_settime( self->periodic_timer, 0, &tv, NULL );
+		sigevent sev;
+		sev.sigev_notify = SIGEV_THREAD_ID;
+		sev.sigev_signo = SIGPROF;
+		sev.sigev_value.sival_ptr = &(self->signalClosure);
+		sev._sigev_un._tid = sys_gettid();
+		if (timer_create(CLOCK_THREAD_CPUTIME_ID, &sev, &self->periodicTimer) != 0) {
+			TraceEvent(SevWarn, "FailedToCreateProfilingTimer").GetLastError();
+			return Void();
+		}
+		self->timerInitialized = true;
+		if (timer_settime(self->periodicTimer, 0, &tv, nullptr) != 0) {
+			TraceEvent(SevWarn, "FailedToSetProfilingTimer").GetLastError();
+			return Void();
 		}
 
-		// Open and truncate output file
-		state Reference<SyncFileForSim> outFile =  Reference<SyncFileForSim>(new SyncFileForSim(outfn));
 		state int64_t outOffset = 0;
-		Void _ = wait( outFile->truncate(outOffset) );
+		wait(outFile->truncate(outOffset));
 
-		Void _ = wait( outFile->write( self->environmentInfoWriter.getData(), self->environmentInfoWriter.getLength(), outOffset ) );
+		wait(outFile->write(self->environmentInfoWriter.getData(), self->environmentInfoWriter.getLength(), outOffset));
 		outOffset += self->environmentInfoWriter.getLength();
 
 		loop {
-			Void _ = wait( self->network->delay(1.0, TaskMinPriority) || self->network->delay(2.0, TaskMaxPriority) );
+			wait(self->network->delay(1.0, TaskPriority::Min) || self->network->delay(2.0, TaskPriority::Max));
 
 			self->enableSignal(false);
-			std::swap( self->output_buffer, otherBuffer );
+			std::swap(self->output_buffer, otherBuffer);
 			self->enableSignal(true);
 
-			Void _ = wait( otherBuffer->writeTo(outFile, outOffset) );
-			Void _ = wait( outFile->flush() );
+			wait(otherBuffer->writeTo(outFile, outOffset));
+			wait(outFile->flush());
 			otherBuffer->clear();
 		}
 	}
 };
 
-Profiler* Profiler::active_profiler = 0;
+// Outlives main
+Profiler* Profiler::active_profiler = nullptr;
 
-std::string findAndReplace( std::string const& fn, std::string const& symbol, std::string const& value ) {
+std::string findAndReplace(std::string const& fn, std::string const& symbol, std::string const& value) {
 	auto i = fn.find(symbol);
-	if (i == std::string::npos) return fn;
-	return fn.substr(0,i) + value + fn.substr(i+symbol.size());
+	if (i == std::string::npos)
+		return fn;
+	return fn.substr(0, i) + value + fn.substr(i + symbol.size());
 }
 
-void startProfiling(INetwork* network, Optional<int> maybePeriod /*= {}*/, Optional<StringRef> maybeOutputFile /*= {}*/) {
+void startProfiling(INetwork* network,
+                    Optional<int> maybePeriod /*= {}*/,
+                    Optional<StringRef> maybeOutputFile /*= {}*/) {
 	int period;
 	if (maybePeriod.present()) {
 		period = maybePeriod.get();
@@ -272,15 +283,21 @@ void startProfiling(INetwork* network, Optional<int> maybePeriod /*= {}*/, Optio
 		const char* outfn = getenv("FLOW_PROFILER_OUTPUT");
 		outputFile = (outfn ? outfn : "profile.bin");
 	}
-	outputFile = findAndReplace(findAndReplace(findAndReplace(outputFile, "%ADDRESS%", findAndReplace(network->getLocalAddress().toString(), ":", ".")), "%PID%", format("%d", getpid())), "%TID%", format("%llx", (long long)gettid()));
+	outputFile = findAndReplace(
+	    findAndReplace(
+	        findAndReplace(outputFile, "%ADDRESS%", findAndReplace(network->getLocalAddress().toString(), ":", ".")),
+	        "%PID%",
+	        format("%d", getpid())),
+	    "%TID%",
+	    format("%llx", (long long)sys_gettid()));
 
 	if (!Profiler::active_profiler)
-		Profiler::active_profiler = new Profiler( period, outputFile, network );
+		Profiler::active_profiler = new Profiler(period, outputFile, network);
 }
 
 void stopProfiling() {
 	if (Profiler::active_profiler) {
-		Profiler *p = Profiler::active_profiler;
+		Profiler* p = Profiler::active_profiler;
 		Profiler::active_profiler = nullptr;
 		delete p;
 	}

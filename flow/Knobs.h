@@ -22,27 +22,33 @@
 #define FLOW_KNOBS_H
 #pragma once
 
-#include "Platform.h"
+#include "flow/Platform.h"
 
 #include <map>
+#include <set>
 #include <string>
 #include <stdint.h>
 
 class Knobs {
 public:
-	bool setKnob( std::string const& name, std::string const& value ); // Returns true if the knob name is known, false if it is unknown
-	void trace();
+	bool setKnob(std::string const& name,
+	             std::string const& value); // Returns true if the knob name is known, false if it is unknown
+	void trace() const;
 
 protected:
-	void initKnob( double& knob, double value, std::string const& name );
-	void initKnob( int64_t& knob, int64_t value, std::string const& name );
-	void initKnob( int& knob, int value, std::string const& name );
-	void initKnob( std::string& knob, const std::string& value, const std::string& name );
+	Knobs() = default;
+	void initKnob(double& knob, double value, std::string const& name);
+	void initKnob(int64_t& knob, int64_t value, std::string const& name);
+	void initKnob(int& knob, int value, std::string const& name);
+	void initKnob(std::string& knob, const std::string& value, const std::string& name);
+	void initKnob(bool& knob, bool value, std::string const& name);
 
 	std::map<std::string, double*> double_knobs;
 	std::map<std::string, int64_t*> int64_knobs;
 	std::map<std::string, int*> int_knobs;
 	std::map<std::string, std::string*> string_knobs;
+	std::map<std::string, bool*> bool_knobs;
+	std::set<std::string> explicitlySetKnobs;
 };
 
 class FlowKnobs : public Knobs {
@@ -61,17 +67,30 @@ public:
 	double QUEUE_MODEL_SMOOTHING_AMOUNT;
 
 	int RANDOMSEED_RETRY_LIMIT;
+	double FAST_ALLOC_LOGGING_BYTES;
+	double HUGE_ARENA_LOGGING_BYTES;
+	double HUGE_ARENA_LOGGING_INTERVAL;
 
-	//slow task profiling
-	double SLOWTASK_PROFILING_INTERVAL;
+	bool WRITE_TRACING_ENABLED;
+	int TRACING_UDP_LISTENER_PORT;
+
+	// run loop profiling
+	double RUN_LOOP_PROFILING_INTERVAL;
+	double SLOWTASK_PROFILING_LOG_INTERVAL;
 	double SLOWTASK_PROFILING_MAX_LOG_INTERVAL;
 	double SLOWTASK_PROFILING_LOG_BACKOFF;
+	double SATURATION_PROFILING_LOG_INTERVAL;
+	double SATURATION_PROFILING_MAX_LOG_INTERVAL;
+	double SATURATION_PROFILING_LOG_BACKOFF;
 
-	//connectionMonitor
+	// connectionMonitor
 	double CONNECTION_MONITOR_LOOP_TIME;
 	double CONNECTION_MONITOR_TIMEOUT;
+	double CONNECTION_MONITOR_IDLE_TIMEOUT;
+	double CONNECTION_MONITOR_INCOMING_IDLE_MULTIPLIER;
+	double CONNECTION_MONITOR_UNREFERENCED_CLOSE_DELAY;
 
-	//FlowTransport
+	// FlowTransport
 	double CONNECTION_REJECTED_MESSAGE_DELAY;
 	double CONNECTION_ID_TIMEOUT;
 	double CONNECTION_CLEANUP_DELAY;
@@ -79,48 +98,92 @@ public:
 	double MAX_RECONNECTION_TIME;
 	double RECONNECTION_TIME_GROWTH_RATE;
 	double RECONNECTION_RESET_TIME;
+	double ALWAYS_ACCEPT_DELAY;
+	int ACCEPT_BATCH_SIZE;
+	double INCOMPATIBLE_PEER_DELAY_BEFORE_LOGGING;
+	double PING_LOGGING_INTERVAL;
+	int PING_SAMPLE_AMOUNT;
+	int NETWORK_CONNECT_SAMPLE_AMOUNT;
 
-	//AsyncFileCached
+	int TLS_CERT_REFRESH_DELAY_SECONDS;
+	double TLS_SERVER_CONNECTION_THROTTLE_TIMEOUT;
+	double TLS_CLIENT_CONNECTION_THROTTLE_TIMEOUT;
+	int TLS_SERVER_CONNECTION_THROTTLE_ATTEMPTS;
+	int TLS_CLIENT_CONNECTION_THROTTLE_ATTEMPTS;
+	int TLS_CLIENT_HANDSHAKE_THREADS;
+	int TLS_SERVER_HANDSHAKE_THREADS;
+	int TLS_HANDSHAKE_THREAD_STACKSIZE;
+	int TLS_MALLOC_ARENA_MAX;
+	int TLS_HANDSHAKE_LIMIT;
+
+	int NETWORK_TEST_CLIENT_COUNT;
+	int NETWORK_TEST_REPLY_SIZE;
+	int NETWORK_TEST_REQUEST_COUNT;
+	int NETWORK_TEST_REQUEST_SIZE;
+	bool NETWORK_TEST_SCRIPT_MODE;
+
+	// AsyncFileCached
 	int64_t PAGE_CACHE_4K;
 	int64_t PAGE_CACHE_64K;
 	int64_t SIM_PAGE_CACHE_4K;
 	int64_t SIM_PAGE_CACHE_64K;
 	int64_t BUGGIFY_SIM_PAGE_CACHE_4K;
 	int64_t BUGGIFY_SIM_PAGE_CACHE_64K;
+	std::string CACHE_EVICTION_POLICY; // for now, "random", "lru", are supported
 	int MAX_EVICT_ATTEMPTS;
+	double PAGE_CACHE_TRUNCATE_LOOKUP_FRACTION;
+	double TOO_MANY_CONNECTIONS_CLOSED_RESET_DELAY;
+	int TOO_MANY_CONNECTIONS_CLOSED_TIMEOUT;
+	int PEER_UNAVAILABLE_FOR_LONG_TIME_TIMEOUT;
+	int FLOW_CACHEDFILE_WRITE_IO_SIZE;
 
-	//AsyncFileKAIO
+	// AsyncFileEIO
+	int EIO_MAX_PARALLELISM;
+	int EIO_USE_ODIRECT;
+
+	// AsyncFileKAIO
 	int MAX_OUTSTANDING;
 	int MIN_SUBMIT;
 
 	int PAGE_WRITE_CHECKSUM_HISTORY;
+	int DISABLE_POSIX_KERNEL_AIO;
 
-	//AsyncFileNonDurable
+	// AsyncFileNonDurable
+	double NON_DURABLE_MAX_WRITE_DELAY;
 	double MAX_PRIOR_MODIFICATION_DELAY;
 
-	//GenericActors
-	double MAX_DELIVER_DUPLICATE_DELAY;
+	// GenericActors
 	double BUGGIFY_FLOW_LOCK_RELEASE_DELAY;
+	int LOW_PRIORITY_DELAY_COUNT;
+	double LOW_PRIORITY_MAX_DELAY;
 
-	//IAsyncFile
+	// IAsyncFile
 	int64_t INCREMENTAL_DELETE_TRUNCATE_AMOUNT;
 	double INCREMENTAL_DELETE_INTERVAL;
 
-	//Net2
+	// Net2
 	double MIN_COALESCE_DELAY;
 	double MAX_COALESCE_DELAY;
 	double SLOW_LOOP_CUTOFF;
 	double SLOW_LOOP_SAMPLING_RATE;
 	int64_t TSC_YIELD_TIME;
 	int64_t REACTOR_FLAGS;
+	double MIN_LOGGED_PRIORITY_BUSY_FRACTION;
+	int CERT_FILE_MAX_SIZE;
+	int READY_QUEUE_RESERVED_SIZE;
 
-	//Network
+	// Network
 	int64_t PACKET_LIMIT;
-	int64_t PACKET_WARNING;  // 2MB packet warning quietly allows for 1MB system messages
+	int64_t PACKET_WARNING; // 2MB packet warning quietly allows for 1MB system messages
 	double TIME_OFFSET_LOGGING_INTERVAL;
+	int MAX_PACKET_SEND_BYTES;
+	int MIN_PACKET_BUFFER_BYTES;
+	int MIN_PACKET_BUFFER_FREE_BYTES;
+	int FLOW_TCP_NODELAY;
+	int FLOW_TCP_QUICKACK;
 
-	//Sim2
-	//FIMXE: more parameters could be factored out
+	// Sim2
+	// FIMXE: more parameters could be factored out
 	double MIN_OPEN_TIME;
 	double MAX_OPEN_TIME;
 	int64_t SIM_DISK_IOPS;
@@ -130,19 +193,24 @@ public:
 	double SLOW_NETWORK_LATENCY;
 	double MAX_CLOGGING_LATENCY;
 	double MAX_BUGGIFIED_DELAY;
+	int SIM_CONNECT_ERROR_MODE;
 
-	//Tracefiles
+	// Tracefiles
 	int ZERO_LENGTH_FILE_PAD;
 	double TRACE_FLUSH_INTERVAL;
 	double TRACE_RETRY_OPEN_INTERVAL;
 	int MIN_TRACE_SEVERITY;
 	int MAX_TRACE_SUPPRESSIONS;
-	int TRACE_FSYNC_ENABLED;
+	bool TRACE_DATETIME_ENABLED;
+	int TRACE_SYNC_ENABLED;
 	int TRACE_EVENT_METRIC_UNITS_PER_SAMPLE;
-	int TRACE_EVENT_THROTLLER_SAMPLE_EXPIRY;
+	int TRACE_EVENT_THROTTLER_SAMPLE_EXPIRY;
 	int TRACE_EVENT_THROTTLER_MSG_LIMIT;
+	int MAX_TRACE_FIELD_LENGTH;
+	int MAX_TRACE_EVENT_LENGTH;
+	bool ALLOCATION_TRACING_ENABLED;
 
-	//TDMetrics
+	// TDMetrics
 	int64_t MAX_METRIC_SIZE;
 	int64_t MAX_METRIC_LEVEL;
 	double METRIC_LEVEL_DIVISOR;
@@ -150,7 +218,9 @@ public:
 	int METRIC_LIMIT_RESPONSE_FACTOR;
 	int MAX_METRICS;
 
-	//Load Balancing
+	// Load Balancing
+	int LOAD_BALANCE_ZONE_ID_LOCALITY_ENABLED;
+	int LOAD_BALANCE_DC_ID_LOCALITY_ENABLED;
 	double LOAD_BALANCE_MAX_BACKOFF;
 	double LOAD_BALANCE_START_BACKOFF;
 	double LOAD_BALANCE_BACKOFF_RATE;
@@ -162,16 +232,36 @@ public:
 	double SECOND_REQUEST_BUDGET_GROWTH;
 	double SECOND_REQUEST_MAX_BUDGET;
 	double ALTERNATIVES_FAILURE_RESET_TIME;
-	double ALTERNATIVES_FAILURE_MAX_DELAY;
 	double ALTERNATIVES_FAILURE_MIN_DELAY;
 	double ALTERNATIVES_FAILURE_DELAY_RATIO;
+	double ALTERNATIVES_FAILURE_MAX_DELAY;
+	double ALTERNATIVES_FAILURE_SLOW_DELAY_RATIO;
+	double ALTERNATIVES_FAILURE_SLOW_MAX_DELAY;
+	double ALTERNATIVES_FAILURE_SKIP_DELAY;
 	double FUTURE_VERSION_INITIAL_BACKOFF;
 	double FUTURE_VERSION_MAX_BACKOFF;
 	double FUTURE_VERSION_BACKOFF_GROWTH;
+	int LOAD_BALANCE_MAX_BAD_OPTIONS;
+	bool LOAD_BALANCE_PENALTY_IS_BAD;
+	double BASIC_LOAD_BALANCE_UPDATE_RATE;
+	double BASIC_LOAD_BALANCE_MAX_CHANGE;
+	double BASIC_LOAD_BALANCE_MAX_PROB;
+	int BASIC_LOAD_BALANCE_BUCKETS;
+	int BASIC_LOAD_BALANCE_COMPUTE_PRECISION;
+	double BASIC_LOAD_BALANCE_MIN_REQUESTS;
+	double BASIC_LOAD_BALANCE_MIN_CPU;
 
-	FlowKnobs(bool randomize = false, bool isSimulated = false);
+	// Health Monitor
+	int FAILURE_DETECTION_DELAY;
+	bool HEALTH_MONITOR_MARK_FAILED_UNSTABLE_CONNECTIONS;
+	int HEALTH_MONITOR_CLIENT_REQUEST_INTERVAL_SECS;
+	int HEALTH_MONITOR_CONNECTION_MAX_CLOSED;
+
+	FlowKnobs();
+	void initialize(bool randomize = false, bool isSimulated = false);
 };
 
+extern std::unique_ptr<FlowKnobs> globalFlowKnobs;
 extern FlowKnobs const* FLOW_KNOBS;
 
 #endif

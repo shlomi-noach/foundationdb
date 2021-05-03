@@ -21,6 +21,7 @@
 
 
 import ctypes
+import math
 import sys
 import os
 import struct
@@ -32,14 +33,7 @@ import traceback
 
 sys.path[:0] = [os.path.join(os.path.dirname(__file__), '..')]
 import fdb
-
-assert not fdb.is_api_version_selected()
-try:
-    fdb.get_api_version()
-except RuntimeError as e:
-    assert str(e) == 'API version is not set'
 fdb.api_version(int(sys.argv[2]))
-assert int(sys.argv[2]) == fdb.get_api_version()
 
 from fdb import six
 from fdb.impl import strinc
@@ -48,9 +42,13 @@ import fdb.tuple
 from directory_extension import DirectoryExtension
 
 from cancellation_timeout_tests import test_timeouts
+from cancellation_timeout_tests import test_db_timeouts
 from cancellation_timeout_tests import test_cancellation
 from cancellation_timeout_tests import test_retry_limits
+from cancellation_timeout_tests import test_db_retry_limits
 from cancellation_timeout_tests import test_combinations
+
+from size_limit_tests import test_size_limit_option, test_get_approximate_size
 
 random.seed(0)
 
@@ -98,7 +96,7 @@ class Stack:
                     else:
                         raw[i] = (raw[i][0], val)
                 except fdb.FDBError as e:
-                    # print('ERROR: %s' % repr(e))
+                    # print('ERROR: %r' % e)
                     raw[i] = (raw[i][0], fdb.tuple.pack((b'ERROR', str(e.code).encode('ascii'))))
 
         if count is None:
@@ -129,6 +127,48 @@ class Instruction:
         self.stack.push(self.index, val)
 
 
+def test_fdb_transactional_generator(db):
+    try:
+        @fdb.transactional
+        def function_that_yields(tr):
+            yield 0
+        assert fdb.get_api_version() < 630, "Pre-6.3, a decorator may wrap a function that yields"
+    except ValueError as e:
+        assert fdb.get_api_version() >= 630, "Post-6.3, a decorator should throw if wrapped function yields"
+
+
+def test_fdb_transactional_returns_generator(db):
+    try:
+        def function_that_yields(tr):
+            yield 0
+        @fdb.transactional
+        def function_that_returns(tr):
+            return function_that_yields(tr)
+        function_that_returns()
+        assert fdb.get_api_version() < 630, "Pre-6.3, returning a generator is allowed"
+    except ValueError as e:
+        assert fdb.get_api_version() >= 630, "Post-6.3, returning a generator should throw"
+
+
+def test_db_options(db):
+    db.options.set_location_cache_size(100001)
+    db.options.set_max_watches(100001)
+    db.options.set_datacenter_id("dc_id")
+    db.options.set_machine_id("machine_id")
+    db.options.set_snapshot_ryw_enable()
+    db.options.set_snapshot_ryw_disable()
+    db.options.set_transaction_logging_max_field_length(1000)
+    db.options.set_transaction_timeout(100000)
+    db.options.set_transaction_timeout(0)
+    db.options.set_transaction_timeout(0)
+    db.options.set_transaction_max_retry_delay(100)
+    db.options.set_transaction_size_limit(100000)
+    db.options.set_transaction_retry_limit(10)
+    db.options.set_transaction_retry_limit(-1)
+    db.options.set_transaction_causal_read_risky()
+    db.options.set_transaction_include_port_in_address()
+
+
 @fdb.transactional
 def test_options(tr):
     tr.options.set_priority_system_immediate()
@@ -138,14 +178,16 @@ def test_options(tr):
     tr.options.set_read_your_writes_disable()
     tr.options.set_read_system_keys()
     tr.options.set_access_system_keys()
-    tr.options.set_durability_dev_null_is_web_scale()
+    tr.options.set_transaction_logging_max_field_length(1000)
     tr.options.set_timeout(60 * 1000)
     tr.options.set_retry_limit(50)
     tr.options.set_max_retry_delay(100)
     tr.options.set_used_during_commit_protection_disable()
-    tr.options.set_transaction_logging_enable('my_transaction')
+    tr.options.set_debug_transaction_identifier('my_transaction')
+    tr.options.set_log_transaction()
     tr.options.set_read_lock_aware()
     tr.options.set_lock_aware()
+    tr.options.set_include_port_in_address()
 
     tr.get(b'\xff').wait()
 
@@ -347,6 +389,14 @@ class Tester:
                         inst.push(b'RESULT_NOT_PRESENT')
                     else:
                         inst.push(f)
+                elif inst.op == six.u("GET_ESTIMATED_RANGE_SIZE"):
+                    begin, end = inst.pop(2)
+                    estimatedSize = obj.get_estimated_range_size_bytes(begin, end).wait()
+                    inst.push(b"GOT_ESTIMATED_RANGE_SIZE")
+                elif inst.op == six.u("GET_RANGE_SPLIT_POINTS"):
+                    begin, end, chunkSize = inst.pop(3)
+                    estimatedSize = obj.get_range_split_points(begin, end, chunkSize).wait()
+                    inst.push(b"GOT_RANGE_SPLIT_POINTS")
                 elif inst.op == six.u("GET_KEY"):
                     key, or_equal, offset, prefix = inst.pop(4)
                     result = obj.get_key(fdb.KeySelector(key, or_equal, offset))
@@ -462,6 +512,9 @@ class Tester:
                 elif inst.op == six.u("GET_COMMITTED_VERSION"):
                     self.last_version = inst.tr.get_committed_version()
                     inst.push(b"GOT_COMMITTED_VERSION")
+                elif inst.op == six.u("GET_APPROXIMATE_SIZE"):
+                    approximate_size = inst.tr.get_approximate_size().wait()
+                    inst.push(b"GOT_APPROXIMATE_SIZE")
                 elif inst.op == six.u("GET_VERSIONSTAMP"):
                     inst.push(inst.tr.get_versionstamp())
                 elif inst.op == six.u("TUPLE_PACK"):
@@ -506,6 +559,8 @@ class Tester:
                 elif inst.op == six.u("ENCODE_FLOAT"):
                     f_bytes = inst.pop()
                     f = struct.unpack(">f", f_bytes)[0]
+                    if not math.isnan(f) and not math.isinf(f) and not f == -0.0 and f == int(f):
+                        f = int(f)
                     inst.push(fdb.tuple.SingleFloat(f))
                 elif inst.op == six.u("ENCODE_DOUBLE"):
                     d_bytes = inst.pop()
@@ -529,30 +584,21 @@ class Tester:
                     Tester.wait_empty(self.db, prefix)
                     inst.push(b"WAITED_FOR_EMPTY")
                 elif inst.op == six.u("UNIT_TESTS"):
-                    assert fdb.is_api_version_selected()
-                    api_version = fdb.get_api_version()
                     try:
-                        fdb.api_version(api_version + 1)
-                        raise RuntimeError('Was not stopped from selecting two API versions')
-                    except RuntimeError as e:
-                        assert str(e) == 'FDB API already loaded at version {}'.format(api_version)
-                    try:
-                        fdb.api_version(api_version - 1)
-                        raise RuntimeError('Was not stopped from selecting two API versions')
-                    except RuntimeError as e:
-                        assert str(e) == 'FDB API already loaded at version {}'.format(api_version)
-                    fdb.api_version(api_version)
-                    try:
-                        db.options.set_location_cache_size(100001)
-
+                        test_db_options(db)
                         test_options(db)
                         test_watches(db)
                         test_cancellation(db)
                         test_retry_limits(db)
+                        test_db_retry_limits(db)
                         test_timeouts(db)
+                        test_db_timeouts(db)
                         test_combinations(db)
                         test_locality(db)
                         test_predicates()
+
+                        test_size_limit_option(db)
+                        test_get_approximate_size(db)
 
                     except fdb.FDBError as e:
                         print("Unit tests failed: %s" % e.description)
@@ -564,7 +610,7 @@ class Tester:
                 else:
                     raise Exception("Unknown op %s" % inst.op)
             except fdb.FDBError as e:
-                # print('ERROR: %s' % repr(e))
+                # print('ERROR: %r' % e)
                 inst.stack.push(idx, fdb.tuple.pack((b"ERROR", str(e.code).encode('ascii'))))
 
             # print("        to %s" % self.stack)

@@ -22,34 +22,48 @@
 #define FDBSERVER_RECOVERYSTATE_H
 #pragma once
 
-// RecoveryState and RecoveryStatus should probably be merged.  The former is passed through ServerDBInfo and used for "real" decisions in the system; the latter
-// is slightly more detailed and is used by the status infrastructure.  But I'm scared to make changes to the former so close to 1.0 release, so I'm making the latter.
+#include "flow/serialize.h"
 
-namespace RecoveryState {
-	enum RecoveryState { READING_CSTATE = 1, LOCKING_CSTATE = 2, RECRUITING = 3, RECOVERY_TRANSACTION = 4, WRITING_CSTATE = 5, FULLY_RECOVERED = 6, REMOTE_RECOVERED = 7 };
+// RecoveryState and RecoveryStatus should probably be merged.  The former is passed through ServerDBInfo and used for
+// "real" decisions in the system; the latter is slightly more detailed and is used by the status infrastructure.  But
+// I'm scared to make changes to the former so close to 1.0 release, so I'm making the latter.
+
+enum class RecoveryState {
+	UNINITIALIZED = 0,
+	READING_CSTATE = 1,
+	LOCKING_CSTATE = 2,
+	RECRUITING = 3,
+	RECOVERY_TRANSACTION = 4,
+	WRITING_CSTATE = 5,
+	ACCEPTING_COMMITS = 6,
+	ALL_LOGS_RECRUITED = 7,
+	STORAGE_RECOVERED = 8,
+	FULLY_RECOVERED = 9
 };
 
 namespace RecoveryStatus {
-	enum RecoveryStatus { 
-		reading_coordinated_state, 
-		locking_coordinated_state,
-		locking_old_transaction_servers,
-		reading_transaction_system_state,
-		configuration_missing,
-		configuration_never_created,
-		configuration_invalid,
-		recruiting_transaction_servers,
-		initializing_transaction_servers,
-		recovery_transaction,
-		writing_coordinated_state,
-		fully_recovered,
-		remote_recovered,
-		END
-	};
-
-	// in Status.actor.cpp
-	extern const char* names[];
-	extern const char* descriptions[];
+enum RecoveryStatus {
+	reading_coordinated_state,
+	locking_coordinated_state,
+	locking_old_transaction_servers,
+	reading_transaction_system_state,
+	configuration_missing,
+	configuration_never_created,
+	configuration_invalid,
+	recruiting_transaction_servers,
+	initializing_transaction_servers,
+	recovery_transaction,
+	writing_coordinated_state,
+	accepting_commits,
+	all_logs_recruited,
+	storage_recovered,
+	fully_recovered,
+	END
 };
+
+// in Status.actor.cpp
+extern const char* names[];
+extern const char* descriptions[];
+}; // namespace RecoveryStatus
 
 #endif

@@ -18,118 +18,118 @@
  * limitations under the License.
  */
 
-#include "flow/actorcompiler.h"
-#include "fdbrpc/ContinuousSample.h"
-#include "fdbclient/NativeAPI.h"
-#include "fdbserver/TesterInterface.h"
-#include "fdbserver/WorkerInterface.h"
-#include "workloads.h"
-#include "BulkSetup.actor.h"
-
 #include <boost/lexical_cast.hpp>
+
+#include "fdbrpc/ContinuousSample.h"
+#include "fdbclient/NativeAPI.actor.h"
+#include "fdbserver/TesterInterface.actor.h"
+#include "fdbserver/WorkerInterface.actor.h"
+#include "fdbserver/workloads/workloads.actor.h"
+#include "fdbserver/workloads/BulkSetup.actor.h"
+#include "flow/actorcompiler.h" // This must be the last #include.
 
 struct WriteBandwidthWorkload : KVWorkload {
 	int keysPerTransaction;
 	double testDuration, warmingDelay, loadTime, maxInsertRate;
 	std::string valueString;
 
-	vector<Future<Void>> clients;
+	std::vector<Future<Void>> clients;
 	PerfIntCounter transactions, retries;
 	ContinuousSample<double> commitLatencies, GRVLatencies;
 
 	WriteBandwidthWorkload(WorkloadContext const& wcx)
-		: KVWorkload(wcx),
-		commitLatencies( 2000 ), GRVLatencies( 2000 ),
-		loadTime( 0.0 ), transactions("Transactions"), retries("Retries")
-	{
-		testDuration = getOption( options, LiteralStringRef("testDuration"), 10.0 );
-		keysPerTransaction = getOption( options, LiteralStringRef("keysPerTransaction"), 100 );
-		valueString = std::string( maxValueBytes, '.' );
+	  : KVWorkload(wcx), commitLatencies(2000), GRVLatencies(2000), loadTime(0.0), transactions("Transactions"),
+	    retries("Retries") {
+		testDuration = getOption(options, LiteralStringRef("testDuration"), 10.0);
+		keysPerTransaction = getOption(options, LiteralStringRef("keysPerTransaction"), 100);
+		valueString = std::string(maxValueBytes, '.');
 
-		warmingDelay = getOption( options, LiteralStringRef("warmingDelay"), 0.0 );
-		maxInsertRate = getOption( options, LiteralStringRef("maxInsertRate"), 1e12 );
+		warmingDelay = getOption(options, LiteralStringRef("warmingDelay"), 0.0);
+		maxInsertRate = getOption(options, LiteralStringRef("maxInsertRate"), 1e12);
 	}
-		
-	virtual std::string description() { return "WriteBandwidth"; }
-	virtual Future<Void> setup( Database const& cx ) { return _setup( cx, this ); }
-	virtual Future<Void> start( Database const& cx ) { return _start( cx, this ); }
 
-	virtual Future<bool> check( Database const& cx ) { return true; }
+	std::string description() const override { return "WriteBandwidth"; }
+	Future<Void> setup(Database const& cx) override { return _setup(cx, this); }
+	Future<Void> start(Database const& cx) override { return _start(cx, this); }
 
-	virtual void getMetrics( vector<PerfMetric>& m ) {
+	Future<bool> check(Database const& cx) override { return true; }
+
+	void getMetrics(std::vector<PerfMetric>& m) override {
 		double duration = testDuration;
 		int writes = transactions.getValue() * keysPerTransaction;
-		m.push_back( PerfMetric( "Measured Duration", duration, true ) );
-		m.push_back( PerfMetric( "Transactions/sec", transactions.getValue() / duration, false ) );
-		m.push_back( PerfMetric( "Operations/sec", writes / duration, false ) );
-		m.push_back( transactions.getMetric() );
-		m.push_back( retries.getMetric() );
-		m.push_back( PerfMetric( "Mean load time (seconds)", loadTime, true ) );
-		m.push_back( PerfMetric( "Write rows", writes, false ) );
+		m.emplace_back("Measured Duration", duration, true);
+		m.emplace_back("Transactions/sec", transactions.getValue() / duration, false);
+		m.emplace_back("Operations/sec", writes / duration, false);
+		m.push_back(transactions.getMetric());
+		m.push_back(retries.getMetric());
+		m.emplace_back("Mean load time (seconds)", loadTime, true);
+		m.emplace_back("Write rows", writes, false);
 
-		m.push_back( PerfMetric( "Mean GRV Latency (ms)", 1000 * GRVLatencies.mean(), true ) );
-		m.push_back( PerfMetric( "Median GRV Latency (ms, averaged)", 1000 * GRVLatencies.median(), true ) );
-		m.push_back( PerfMetric( "90% GRV Latency (ms, averaged)", 1000 * GRVLatencies.percentile( 0.90 ), true ) );
-		m.push_back( PerfMetric( "98% GRV Latency (ms, averaged)", 1000 * GRVLatencies.percentile( 0.98 ), true ) );
+		m.emplace_back("Mean GRV Latency (ms)", 1000 * GRVLatencies.mean(), true);
+		m.emplace_back("Median GRV Latency (ms, averaged)", 1000 * GRVLatencies.median(), true);
+		m.emplace_back("90% GRV Latency (ms, averaged)", 1000 * GRVLatencies.percentile(0.90), true);
+		m.emplace_back("98% GRV Latency (ms, averaged)", 1000 * GRVLatencies.percentile(0.98), true);
 
-		m.push_back( PerfMetric( "Mean Commit Latency (ms)", 1000 * commitLatencies.mean(), true ) );
-		m.push_back( PerfMetric( "Median Commit Latency (ms, averaged)", 1000 * commitLatencies.median(), true ) );
-		m.push_back( PerfMetric( "90% Commit Latency (ms, averaged)", 1000 * commitLatencies.percentile( 0.90 ), true ) );
-		m.push_back( PerfMetric( "98% Commit Latency (ms, averaged)", 1000 * commitLatencies.percentile( 0.98 ), true ) );
+		m.emplace_back("Mean Commit Latency (ms)", 1000 * commitLatencies.mean(), true);
+		m.emplace_back("Median Commit Latency (ms, averaged)", 1000 * commitLatencies.median(), true);
+		m.emplace_back("90% Commit Latency (ms, averaged)", 1000 * commitLatencies.percentile(0.90), true);
+		m.emplace_back("98% Commit Latency (ms, averaged)", 1000 * commitLatencies.percentile(0.98), true);
 
-		m.push_back( PerfMetric( "Write rows/sec", writes / duration, false ) );
-		m.push_back( PerfMetric( "Bytes written/sec", (writes * (keyBytes + (minValueBytes+maxValueBytes)*0.5)) / duration, false ) );
+		m.emplace_back("Write rows/sec", writes / duration, false);
+		m.emplace_back(
+		    "Bytes written/sec", (writes * (keyBytes + (minValueBytes + maxValueBytes) * 0.5)) / duration, false);
 	}
 
-	Value randomValue() { return StringRef( (uint8_t*)valueString.c_str(), g_random->randomInt(minValueBytes, maxValueBytes+1) );	}
-
-	Standalone<KeyValueRef> operator()( uint64_t n ) {
-		return KeyValueRef( keyForIndex( n, false ), randomValue() );
+	Value randomValue() {
+		return StringRef((uint8_t*)valueString.c_str(),
+		                 deterministicRandom()->randomInt(minValueBytes, maxValueBytes + 1));
 	}
 
-	ACTOR Future<Void> _setup( Database cx, WriteBandwidthWorkload *self ) {
+	Standalone<KeyValueRef> operator()(uint64_t n) { return KeyValueRef(keyForIndex(n, false), randomValue()); }
+
+	ACTOR Future<Void> _setup(Database cx, WriteBandwidthWorkload* self) {
 		state Promise<double> loadTime;
-		state Promise<vector<pair<uint64_t, double> > > ratesAtKeyCounts;
+		state Promise<std::vector<std::pair<uint64_t, double>>> ratesAtKeyCounts;
 
-		Void _ = wait( bulkSetup( cx, self, self->nodeCount, loadTime, true, self->warmingDelay, self->maxInsertRate ) );
+		wait(bulkSetup(cx, self, self->nodeCount, loadTime, true, self->warmingDelay, self->maxInsertRate));
 		self->loadTime = loadTime.getFuture().get();
 		return Void();
 	}
 
-	ACTOR Future<Void> _start( Database cx, WriteBandwidthWorkload *self ) {
-		for( int i = 0; i < self->actorCount; i++ ) {
-			self->clients.push_back( self->writeClient( cx, self ) );
+	ACTOR Future<Void> _start(Database cx, WriteBandwidthWorkload* self) {
+		for (int i = 0; i < self->actorCount; i++) {
+			self->clients.push_back(self->writeClient(cx, self));
 		}
 
-		Void _ = wait( timeout( waitForAll( self->clients ), self->testDuration, Void() ) );
+		wait(timeout(waitForAll(self->clients), self->testDuration, Void()));
 		self->clients.clear();
 		return Void();
 	}
 
-	ACTOR Future<Void> writeClient( Database cx, WriteBandwidthWorkload *self ) {
+	ACTOR Future<Void> writeClient(Database cx, WriteBandwidthWorkload* self) {
 		loop {
-			state Transaction tr( cx );
-			state uint64_t startIdx = g_random->random01() * (self->nodeCount - self->keysPerTransaction);
+			state Transaction tr(cx);
+			state uint64_t startIdx = deterministicRandom()->random01() * (self->nodeCount - self->keysPerTransaction);
 			loop {
 				try {
 					state double start = now();
-					Version v = wait( tr.getReadVersion() );
-					self->GRVLatencies.addSample( now() - start );
+					wait(success(tr.getReadVersion()));
+					self->GRVLatencies.addSample(now() - start);
 
 					// Predefine a single large write conflict range over the whole key space
-					tr.addWriteConflictRange( KeyRangeRef( 
-							self->keyForIndex( startIdx, false ), 
-							keyAfter( self->keyForIndex( startIdx + self->keysPerTransaction - 1, false ) ) ) );
+					tr.addWriteConflictRange(
+					    KeyRangeRef(self->keyForIndex(startIdx, false),
+					                keyAfter(self->keyForIndex(startIdx + self->keysPerTransaction - 1, false))));
 
-					for( int i = 0; i < self->keysPerTransaction; i++ )
-						tr.set( self->keyForIndex( startIdx + i, false ), self->randomValue(), false );
+					for (int i = 0; i < self->keysPerTransaction; i++)
+						tr.set(self->keyForIndex(startIdx + i, false), self->randomValue(), false);
 
 					start = now();
-					Void _ = wait( tr.commit() );
-					self->commitLatencies.addSample( now() - start );
+					wait(tr.commit());
+					self->commitLatencies.addSample(now() - start);
 					break;
-				} catch( Error& e ) {
-					Void _ = wait( tr.onError( e ) );
+				} catch (Error& e) {
+					wait(tr.onError(e));
 					++self->retries;
 				}
 			}

@@ -22,21 +22,25 @@
 
 import ctypes
 import ctypes.util
+import datetime
 import functools
+import inspect
+import multiprocessing
+import os
+import platform
+import sys
 import threading
 import traceback
-import inspect
-import datetime
-import platform
-import os
-import sys
 
+import fdb
 from fdb import six
 
 _network_thread = None
 _network_thread_reentrant_lock = threading.RLock()
 
 _open_file = open
+
+_thread_local_storage = threading.local()
 
 import weakref
 
@@ -49,11 +53,6 @@ class _NetworkOptions(object):
 class _ErrorPredicates(object):
     def __init__(self, parent):
         self._parent = parent
-
-
-class _ClusterOptions(object):
-    def __init__(self, cluster):
-        self._parent = weakref.proxy(cluster)
 
 
 class _DatabaseOptions(object):
@@ -158,7 +157,7 @@ def fill_operations():
         add_operation("bit_" + fname, v)
 
 
-for scope in ['ClusterOption', 'DatabaseOption', 'TransactionOption', 'NetworkOption']:
+for scope in ['DatabaseOption', 'TransactionOption', 'NetworkOption']:
     fill_options(scope)
 
 fill_options('ErrorPredicate', True)
@@ -205,7 +204,9 @@ def transactional(*tr_args, **tr_kwargs):
 
     It is important to note that the wrapped method may be called
     multiple times in the event of a commit failure, until the commit
-    succeeds.
+    succeeds.  This restriction requires that the wrapped function
+    may not be a generator, or a function that returns a closure that
+    contains the `tr` object.
 
     If given a Transaction, the Transaction will be passed into the
     wrapped code, and WILL NOT be committed at completion of the
@@ -227,7 +228,10 @@ def transactional(*tr_args, **tr_kwargs):
         wfunc = func
         while getattr(wfunc, '__wrapped__', None):
             wfunc = wfunc.__wrapped__
-        index = inspect.getargspec(wfunc).args.index(parameter)
+        if hasattr(inspect, 'getfullargspec'):
+            index = inspect.getfullargspec(wfunc).args.index(parameter)
+        else:
+            index = inspect.getargspec(wfunc).args.index(parameter)
 
         if getattr(func, '_is_coroutine', False):
             @functools.wraps(func)
@@ -246,9 +250,14 @@ def transactional(*tr_args, **tr_kwargs):
                     except FDBError as e:
                         yield asyncio.From(tr.on_error(e.code))
         else:
-
             @functools.wraps(func)
             def wrapper(*args, **kwargs):
+                # We can't throw this from the decorator, as when a user runs
+                # >>> import fdb ; fdb.api_version(700)
+                # the code above uses @transactional before the API version is set
+                if fdb.get_api_version() >= 630 and inspect.isgeneratorfunction(func):
+                    raise ValueError("Generators can not be wrapped with fdb.transactional")
+
                 if isinstance(args[index], TransactionRead):
                     return func(*args, **kwargs)
 
@@ -261,8 +270,11 @@ def transactional(*tr_args, **tr_kwargs):
                 # last = start
 
                 while not committed:
+                    ret = None
                     try:
                         ret = func(*largs, **kwargs)
+                        if fdb.get_api_version() >= 630 and inspect.isgenerator(ret):
+                            raise ValueError("Generators can not be wrapped with fdb.transactional")
                         tr.commit().wait()
                         committed = True
                     except FDBError as e:
@@ -404,7 +416,7 @@ class TransactionRead(_FDBBase):
 
     def get_read_version(self):
         """Get the read version of the transaction."""
-        return FutureVersion(self.capi.fdb_transaction_get_read_version(self.tpointer))
+        return FutureInt64(self.capi.fdb_transaction_get_read_version(self.tpointer))
 
     def get(self, key):
         key = keyToBytes(key)
@@ -448,7 +460,31 @@ class TransactionRead(_FDBBase):
         if isinstance(key, slice):
             return self.get_range(key.start, key.stop, reverse=(key.step == -1))
         return self.get(key)
-
+    
+    def get_estimated_range_size_bytes(self, begin_key, end_key):
+        if begin_key is None or end_key is None:
+            if fdb.get_api_version() >= 700:
+                raise Exception('Invalid begin key or end key')
+            else:
+                if begin_key is None:
+                    begin_key = b''
+                if end_key is None:
+                    end_key = b'\xff'
+        return FutureInt64(self.capi.fdb_transaction_get_estimated_range_size_bytes(
+            self.tpointer,
+            begin_key, len(begin_key),
+            end_key, len(end_key)
+            ))
+    
+    def get_range_split_points(self, begin_key, end_key, chunk_size):
+        if begin_key is None or end_key is None or chunk_size <=0:
+            raise Exception('Invalid begin key, end key or chunk size')
+        return FutureKeyArray(self.capi.fdb_transaction_get_range_split_points(
+            self.tpointer,
+            begin_key, len(begin_key),
+            end_key, len(end_key),
+            chunk_size
+            ))
 
 class Transaction(TransactionRead):
     """A modifiable snapshot of a Database.
@@ -540,6 +576,10 @@ class Transaction(TransactionRead):
         self.capi.fdb_transaction_get_committed_version(self.tpointer, ctypes.byref(version))
         return version.value
 
+    def get_approximate_size(self):
+        """Get the approximate commit size of the transaction."""
+        return FutureInt64(self.capi.fdb_transaction_get_approximate_size(self.tpointer))
+
     def get_versionstamp(self):
         return Key(self.capi.fdb_transaction_get_versionstamp(self.tpointer))
 
@@ -595,12 +635,27 @@ class Future(_FDBBase):
         return bool(self.capi.fdb_future_is_ready(self.fpointer))
 
     def block_until_ready(self):
-        self.capi.fdb_future_block_until_ready(self.fpointer)
+        # Checking readiness is faster than using the callback, so it saves us time if we are already
+        # ready. It also doesn't add much to the cost of this function
+        if not self.is_ready():
+            # Blocking in the native client from the main thread prevents Python from handling signals.
+            # To avoid that behavior, we implement the blocking in Python using semaphores and on_ready.
+            # Using a Semaphore is faster than an Event, and we create only one per thread to avoid the 
+            # cost of creating one every time.
+            semaphore = getattr(_thread_local_storage, 'future_block_semaphore', None)
+            if semaphore is None:
+                semaphore = multiprocessing.Semaphore(0)
+                _thread_local_storage.future_block_semaphore = semaphore
 
-    # Depending on the event_model, block_until_ready may be remapped to do something asynchronous or
-    # just fail.  really_block_until_ready() is always fdb_future_block_until_ready() and is used e.g.
-    # for database and cluster futures that should always be available very quickly
-    really_block_until_ready = block_until_ready
+            self.on_ready(lambda self: semaphore.release())
+
+            try:
+                semaphore.acquire()
+            except:
+                # If this semaphore didn't actually get released, then we need to replace our thread-local
+                # copy so that later callers still function correctly
+                _thread_local_storage.future_block_semaphore = multiprocessing.Semaphore(0)
+                raise
 
     def on_ready(self, callback):
         def cb_and_delref(ignore):
@@ -671,13 +726,19 @@ class FutureVoid(Future):
         return None
 
 
-class FutureVersion(Future):
+class FutureInt64(Future):
     def wait(self):
         self.block_until_ready()
-        version = ctypes.c_int64()
-        self.capi.fdb_future_get_version(self.fpointer, ctypes.byref(version))
-        return version.value
+        value = ctypes.c_int64()
+        self.capi.fdb_future_get_int64(self.fpointer, ctypes.byref(value))
+        return value.value
 
+class FutureUInt64(Future):
+    def wait(self):
+        self.block_until_ready()
+        value = ctypes.c_uint64()
+        self.capi.fdb_future_get_uint64(self.fpointer, ctypes.byref(value))
+        return value.value
 
 class FutureKeyValueArray(Future):
     def wait(self):
@@ -693,6 +754,14 @@ class FutureKeyValueArray(Future):
         # KVs but before returning, but then we would have to store
         # the KVs on the python side and in most cases we are about to
         # destroy the future anyway
+
+class FutureKeyArray(Future):
+    def wait(self):
+        self.block_until_ready()
+        ks = ctypes.pointer(KeyStruct())
+        count = ctypes.c_int()
+        self.capi.fdb_future_get_key_array(self.fpointer, ctypes.byref(ks), ctypes.byref(count))
+        return [ctypes.string_at(x.key, x.key_length) for x in ks[0:count.value]]
 
 
 class FutureStringArray(Future):
@@ -875,7 +944,7 @@ class FormerFuture(_FDBBase):
                 pass
 
 
-class Database(FormerFuture):
+class Database(_FDBBase):
     def __init__(self, dpointer):
         self.dpointer = dpointer
         self.options = _DatabaseOptions(self)
@@ -1094,33 +1163,25 @@ class Database(FormerFuture):
 fill_operations()
 
 
-class Cluster(FormerFuture):
-    def __init__(self, cpointer):
-        self.cpointer = cpointer
-        self.options = _ClusterOptions(self)
-
-    def __del__(self):
-        # print('Destroying cluster 0x%x' % self.cpointer)
-        self.capi.fdb_cluster_destroy(self.cpointer)
+class Cluster(_FDBBase):
+    def __init__(self, cluster_file):
+        self.cluster_file = cluster_file
+        self.options = None
 
     def open_database(self, name):
-        name = paramToBytes(name)
-        f = Future(self.capi.fdb_cluster_create_database(self.cpointer, name, len(name)))
-        f.really_block_until_ready()
-        dpointer = ctypes.c_void_p()
-        self.capi.fdb_future_get_database(f.fpointer, ctypes.byref(dpointer))
-        return Database(dpointer)
+        if name != b'DB':
+            raise FDBError(2013) # invalid_database_name
 
-    def _set_option(self, option, param, length):
-        self.capi.fdb_cluster_set_option(self.cpointer, option, param, length)
+        return create_database(self.cluster_file)
 
+
+def create_database(cluster_file=None):
+    pointer = ctypes.c_void_p()
+    _FDBBase.capi.fdb_create_database(optionalParamToBytes(cluster_file)[0], ctypes.byref(pointer))
+    return Database(pointer)
 
 def create_cluster(cluster_file=None):
-    f = Future(_FDBBase.capi.fdb_create_cluster(optionalParamToBytes(cluster_file)[0]))
-    cpointer = ctypes.c_void_p()
-    f.really_block_until_ready()
-    _FDBBase.capi.fdb_future_get_cluster(f.fpointer, ctypes.byref(cpointer))
-    return Cluster(cpointer)
+    return Cluster(cluster_file)
 
 
 class KeySelector(object):
@@ -1151,8 +1212,8 @@ class KeySelector(object):
     def first_greater_or_equal(cls, key):
         return cls(key, False, 1)
 
-    def __str__(self):
-        return 'KeySelector(%s, %r, %d)' % (self.key, self.or_equal, self.offset)
+    def __repr__(self):
+        return 'KeySelector(%r, %r, %r)' % (self.key, self.or_equal, self.offset)
 
 
 class KVIter(object):
@@ -1183,6 +1244,11 @@ class KeyValueStruct(ctypes.Structure):
                 ('value_length', ctypes.c_int)]
     _pack_ = 4
 
+class KeyStruct(ctypes.Structure):
+    _fields_ = [('key', ctypes.POINTER(ctypes.c_byte)),
+                ('key_length', ctypes.c_int)]
+    _pack_ = 4
+
 
 class KeyValue(object):
     def __init__(self, key, value):
@@ -1207,6 +1273,8 @@ if sys.maxsize <= 2**32:
 if platform.system() == 'Windows':
     capi_name = 'fdb_c.dll'
 elif platform.system() == 'Linux':
+    capi_name = 'libfdb_c.so'
+elif platform.system() == 'FreeBSD':
     capi_name = 'libfdb_c.so'
 elif platform.system() == 'Darwin':
     capi_name = 'libfdb_c.dylib'
@@ -1299,177 +1367,178 @@ def optionalParamToBytes(v):
 
 
 _FDBBase.capi = _capi
-
-_capi.fdb_select_api_version_impl.argtypes = [ctypes.c_int, ctypes.c_int]
-_capi.fdb_select_api_version_impl.restype = ctypes.c_int
-
-_capi.fdb_get_error.argtypes = [ctypes.c_int]
-_capi.fdb_get_error.restype = ctypes.c_char_p
-
-_capi.fdb_error_predicate.argtypes = [ctypes.c_int, ctypes.c_int]
-_capi.fdb_error_predicate.restype = ctypes.c_int
-
-_capi.fdb_setup_network.argtypes = []
-_capi.fdb_setup_network.restype = ctypes.c_int
-_capi.fdb_setup_network.errcheck = check_error_code
-
-_capi.fdb_network_set_option.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_network_set_option.restype = ctypes.c_int
-_capi.fdb_network_set_option.errcheck = check_error_code
-
-_capi.fdb_run_network.argtypes = []
-_capi.fdb_run_network.restype = ctypes.c_int
-_capi.fdb_run_network.errcheck = check_error_code
-
-_capi.fdb_stop_network.argtypes = []
-_capi.fdb_stop_network.restype = ctypes.c_int
-_capi.fdb_stop_network.errcheck = check_error_code
-
-_capi.fdb_future_destroy.argtypes = [ctypes.c_void_p]
-_capi.fdb_future_destroy.restype = None
-
-_capi.fdb_future_release_memory.argtypes = [ctypes.c_void_p]
-_capi.fdb_future_release_memory.restype = None
-
-_capi.fdb_future_cancel.argtypes = [ctypes.c_void_p]
-_capi.fdb_future_cancel.restype = None
-
-_capi.fdb_future_block_until_ready.argtypes = [ctypes.c_void_p]
-_capi.fdb_future_block_until_ready.restype = ctypes.c_int
-_capi.fdb_future_block_until_ready.errcheck = check_error_code
-
-_capi.fdb_future_is_ready.argtypes = [ctypes.c_void_p]
-_capi.fdb_future_is_ready.restype = ctypes.c_int
-
 _CBFUNC = ctypes.CFUNCTYPE(None, ctypes.c_void_p)
 
-_capi.fdb_future_set_callback.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-_capi.fdb_future_set_callback.restype = int
-_capi.fdb_future_set_callback.errcheck = check_error_code
+def init_c_api():
+    _capi.fdb_select_api_version_impl.argtypes = [ctypes.c_int, ctypes.c_int]
+    _capi.fdb_select_api_version_impl.restype = ctypes.c_int
 
-_capi.fdb_future_get_error.argtypes = [ctypes.c_void_p]
-_capi.fdb_future_get_error.restype = int
-_capi.fdb_future_get_error.errcheck = check_error_code
+    _capi.fdb_get_error.argtypes = [ctypes.c_int]
+    _capi.fdb_get_error.restype = ctypes.c_char_p
 
-_capi.fdb_future_get_version.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int64)]
-_capi.fdb_future_get_version.restype = ctypes.c_int
-_capi.fdb_future_get_version.errcheck = check_error_code
+    _capi.fdb_error_predicate.argtypes = [ctypes.c_int, ctypes.c_int]
+    _capi.fdb_error_predicate.restype = ctypes.c_int
 
-_capi.fdb_future_get_key.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.POINTER(ctypes.c_byte)),
-                                     ctypes.POINTER(ctypes.c_int)]
-_capi.fdb_future_get_key.restype = ctypes.c_int
-_capi.fdb_future_get_key.errcheck = check_error_code
+    _capi.fdb_setup_network.argtypes = []
+    _capi.fdb_setup_network.restype = ctypes.c_int
+    _capi.fdb_setup_network.errcheck = check_error_code
 
-_capi.fdb_future_get_cluster.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
-_capi.fdb_future_get_cluster.restype = ctypes.c_int
-_capi.fdb_future_get_cluster.errcheck = check_error_code
+    _capi.fdb_network_set_option.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_network_set_option.restype = ctypes.c_int
+    _capi.fdb_network_set_option.errcheck = check_error_code
 
-_capi.fdb_future_get_database.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
-_capi.fdb_future_get_database.restype = ctypes.c_int
-_capi.fdb_future_get_database.errcheck = check_error_code
+    _capi.fdb_run_network.argtypes = []
+    _capi.fdb_run_network.restype = ctypes.c_int
+    _capi.fdb_run_network.errcheck = check_error_code
 
-_capi.fdb_future_get_value.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
-                                       ctypes.POINTER(ctypes.POINTER(ctypes.c_byte)), ctypes.POINTER(ctypes.c_int)]
-_capi.fdb_future_get_value.restype = ctypes.c_int
-_capi.fdb_future_get_value.errcheck = check_error_code
+    _capi.fdb_stop_network.argtypes = []
+    _capi.fdb_stop_network.restype = ctypes.c_int
+    _capi.fdb_stop_network.errcheck = check_error_code
 
-_capi.fdb_future_get_keyvalue_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(
-    ctypes.POINTER(KeyValueStruct)), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
-_capi.fdb_future_get_keyvalue_array.restype = int
-_capi.fdb_future_get_keyvalue_array.errcheck = check_error_code
+    _capi.fdb_future_destroy.argtypes = [ctypes.c_void_p]
+    _capi.fdb_future_destroy.restype = None
 
-_capi.fdb_future_get_string_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.POINTER(ctypes.c_char_p)), ctypes.POINTER(ctypes.c_int)]
-_capi.fdb_future_get_string_array.restype = int
-_capi.fdb_future_get_string_array.errcheck = check_error_code
+    _capi.fdb_future_release_memory.argtypes = [ctypes.c_void_p]
+    _capi.fdb_future_release_memory.restype = None
 
-_capi.fdb_create_cluster.argtypes = [ctypes.c_char_p]
-_capi.fdb_create_cluster.restype = ctypes.c_void_p
+    _capi.fdb_future_cancel.argtypes = [ctypes.c_void_p]
+    _capi.fdb_future_cancel.restype = None
 
-_capi.fdb_cluster_destroy.argtypes = [ctypes.c_void_p]
-_capi.fdb_cluster_destroy.restype = None
+    _capi.fdb_future_block_until_ready.argtypes = [ctypes.c_void_p]
+    _capi.fdb_future_block_until_ready.restype = ctypes.c_int
+    _capi.fdb_future_block_until_ready.errcheck = check_error_code
 
-_capi.fdb_cluster_create_database.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_cluster_create_database.restype = ctypes.c_void_p
+    _capi.fdb_future_is_ready.argtypes = [ctypes.c_void_p]
+    _capi.fdb_future_is_ready.restype = ctypes.c_int
 
-_capi.fdb_cluster_set_option.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_cluster_set_option.restype = ctypes.c_int
-_capi.fdb_cluster_set_option.errcheck = check_error_code
+    _capi.fdb_future_set_callback.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    _capi.fdb_future_set_callback.restype = int
+    _capi.fdb_future_set_callback.errcheck = check_error_code
 
-_capi.fdb_database_destroy.argtypes = [ctypes.c_void_p]
-_capi.fdb_database_destroy.restype = None
+    _capi.fdb_future_get_error.argtypes = [ctypes.c_void_p]
+    _capi.fdb_future_get_error.restype = int
+    _capi.fdb_future_get_error.errcheck = check_error_code
 
-_capi.fdb_database_create_transaction.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
-_capi.fdb_database_create_transaction.restype = ctypes.c_int
-_capi.fdb_database_create_transaction.errcheck = check_error_code
+    _capi.fdb_future_get_int64.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int64)]
+    _capi.fdb_future_get_int64.restype = ctypes.c_int
+    _capi.fdb_future_get_int64.errcheck = check_error_code
 
-_capi.fdb_database_set_option.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_database_set_option.restype = ctypes.c_int
-_capi.fdb_database_set_option.errcheck = check_error_code
+    _capi.fdb_future_get_uint64.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64)]
+    _capi.fdb_future_get_uint64.restype = ctypes.c_uint
+    _capi.fdb_future_get_uint64.errcheck = check_error_code
 
-_capi.fdb_transaction_destroy.argtypes = [ctypes.c_void_p]
-_capi.fdb_transaction_destroy.restype = None
+    _capi.fdb_future_get_key.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.POINTER(ctypes.c_byte)),
+                                         ctypes.POINTER(ctypes.c_int)]
+    _capi.fdb_future_get_key.restype = ctypes.c_int
+    _capi.fdb_future_get_key.errcheck = check_error_code
 
-_capi.fdb_transaction_cancel.argtypes = [ctypes.c_void_p]
-_capi.fdb_transaction_cancel.restype = None
+    _capi.fdb_future_get_value.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+                                           ctypes.POINTER(ctypes.POINTER(ctypes.c_byte)), ctypes.POINTER(ctypes.c_int)]
+    _capi.fdb_future_get_value.restype = ctypes.c_int
+    _capi.fdb_future_get_value.errcheck = check_error_code
 
-_capi.fdb_transaction_set_read_version.argtypes = [ctypes.c_void_p, ctypes.c_int64]
-_capi.fdb_transaction_set_read_version.restype = None
+    _capi.fdb_future_get_keyvalue_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(
+        ctypes.POINTER(KeyValueStruct)), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+    _capi.fdb_future_get_keyvalue_array.restype = int
+    _capi.fdb_future_get_keyvalue_array.errcheck = check_error_code
 
-_capi.fdb_transaction_get_read_version.argtypes = [ctypes.c_void_p]
-_capi.fdb_transaction_get_read_version.restype = ctypes.c_void_p
+    _capi.fdb_future_get_key_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(
+        ctypes.POINTER(KeyStruct)), ctypes.POINTER(ctypes.c_int)]
+    _capi.fdb_future_get_key_array.restype = int
+    _capi.fdb_future_get_key_array.errcheck = check_error_code
 
-_capi.fdb_transaction_get.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-_capi.fdb_transaction_get.restype = ctypes.c_void_p
+    _capi.fdb_future_get_string_array.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.POINTER(ctypes.c_char_p)), ctypes.POINTER(ctypes.c_int)]
+    _capi.fdb_future_get_string_array.restype = int
+    _capi.fdb_future_get_string_array.errcheck = check_error_code
 
-_capi.fdb_transaction_get_key.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
-_capi.fdb_transaction_get_key.restype = ctypes.c_void_p
+    _capi.fdb_create_database.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
+    _capi.fdb_create_database.restype = ctypes.c_int
+    _capi.fdb_create_database.errcheck = check_error_code
 
-_capi.fdb_transaction_get_range.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
-                                            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-                                            ctypes.c_int, ctypes.c_int]
-_capi.fdb_transaction_get_range.restype = ctypes.c_void_p
+    _capi.fdb_database_destroy.argtypes = [ctypes.c_void_p]
+    _capi.fdb_database_destroy.restype = None
 
-_capi.fdb_transaction_add_conflict_range.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-_capi.fdb_transaction_add_conflict_range.restype = ctypes.c_int
-_capi.fdb_transaction_add_conflict_range.errcheck = check_error_code
+    _capi.fdb_database_create_transaction.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    _capi.fdb_database_create_transaction.restype = ctypes.c_int
+    _capi.fdb_database_create_transaction.errcheck = check_error_code
 
-_capi.fdb_transaction_get_addresses_for_key.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_transaction_get_addresses_for_key.restype = ctypes.c_void_p
+    _capi.fdb_database_set_option.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_database_set_option.restype = ctypes.c_int
+    _capi.fdb_database_set_option.errcheck = check_error_code
 
-_capi.fdb_transaction_set_option.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_transaction_set_option.restype = ctypes.c_int
-_capi.fdb_transaction_set_option.errcheck = check_error_code
+    _capi.fdb_transaction_destroy.argtypes = [ctypes.c_void_p]
+    _capi.fdb_transaction_destroy.restype = None
 
-_capi.fdb_transaction_atomic_op.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-_capi.fdb_transaction_atomic_op.restype = None
+    _capi.fdb_transaction_cancel.argtypes = [ctypes.c_void_p]
+    _capi.fdb_transaction_cancel.restype = None
 
-_capi.fdb_transaction_set.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_transaction_set.restype = None
+    _capi.fdb_transaction_set_read_version.argtypes = [ctypes.c_void_p, ctypes.c_int64]
+    _capi.fdb_transaction_set_read_version.restype = None
 
-_capi.fdb_transaction_clear.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_transaction_clear.restype = None
+    _capi.fdb_transaction_get_read_version.argtypes = [ctypes.c_void_p]
+    _capi.fdb_transaction_get_read_version.restype = ctypes.c_void_p
 
-_capi.fdb_transaction_clear_range.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_transaction_clear_range.restype = None
+    _capi.fdb_transaction_get.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    _capi.fdb_transaction_get.restype = ctypes.c_void_p
 
-_capi.fdb_transaction_watch.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_transaction_watch.restype = ctypes.c_void_p
+    _capi.fdb_transaction_get_key.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    _capi.fdb_transaction_get_key.restype = ctypes.c_void_p
 
-_capi.fdb_transaction_commit.argtypes = [ctypes.c_void_p]
-_capi.fdb_transaction_commit.restype = ctypes.c_void_p
+    _capi.fdb_transaction_get_range.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                                                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                                ctypes.c_int, ctypes.c_int]
+    _capi.fdb_transaction_get_range.restype = ctypes.c_void_p
 
-_capi.fdb_transaction_get_committed_version.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int64)]
-_capi.fdb_transaction_get_committed_version.restype = ctypes.c_int
-_capi.fdb_transaction_get_committed_version.errcheck = check_error_code
+    _capi.fdb_transaction_get_estimated_range_size_bytes.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_transaction_get_estimated_range_size_bytes.restype = ctypes.c_void_p
 
-_capi.fdb_transaction_get_versionstamp.argtypes = [ctypes.c_void_p]
-_capi.fdb_transaction_get_versionstamp.restype = ctypes.c_void_p
+    _capi.fdb_transaction_get_range_split_points.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    _capi.fdb_transaction_get_range_split_points.restype = ctypes.c_void_p
 
-_capi.fdb_transaction_on_error.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_capi.fdb_transaction_on_error.restype = ctypes.c_void_p
+    _capi.fdb_transaction_add_conflict_range.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    _capi.fdb_transaction_add_conflict_range.restype = ctypes.c_int
+    _capi.fdb_transaction_add_conflict_range.errcheck = check_error_code
 
-_capi.fdb_transaction_reset.argtypes = [ctypes.c_void_p]
-_capi.fdb_transaction_reset.restype = None
+    _capi.fdb_transaction_get_addresses_for_key.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_transaction_get_addresses_for_key.restype = ctypes.c_void_p
+
+    _capi.fdb_transaction_set_option.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_transaction_set_option.restype = ctypes.c_int
+    _capi.fdb_transaction_set_option.errcheck = check_error_code
+
+    _capi.fdb_transaction_atomic_op.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    _capi.fdb_transaction_atomic_op.restype = None
+
+    _capi.fdb_transaction_set.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_transaction_set.restype = None
+
+    _capi.fdb_transaction_clear.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_transaction_clear.restype = None
+
+    _capi.fdb_transaction_clear_range.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_transaction_clear_range.restype = None
+
+    _capi.fdb_transaction_watch.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_transaction_watch.restype = ctypes.c_void_p
+
+    _capi.fdb_transaction_commit.argtypes = [ctypes.c_void_p]
+    _capi.fdb_transaction_commit.restype = ctypes.c_void_p
+
+    _capi.fdb_transaction_get_committed_version.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int64)]
+    _capi.fdb_transaction_get_committed_version.restype = ctypes.c_int
+    _capi.fdb_transaction_get_committed_version.errcheck = check_error_code
+
+    _capi.fdb_transaction_get_approximate_size.argtypes = [ctypes.c_void_p]
+    _capi.fdb_transaction_get_approximate_size.restype = ctypes.c_void_p
+
+    _capi.fdb_transaction_get_versionstamp.argtypes = [ctypes.c_void_p]
+    _capi.fdb_transaction_get_versionstamp.restype = ctypes.c_void_p
+
+    _capi.fdb_transaction_on_error.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    _capi.fdb_transaction_on_error.restype = ctypes.c_void_p
+
+    _capi.fdb_transaction_reset.argtypes = [ctypes.c_void_p]
+    _capi.fdb_transaction_reset.restype = None
 
 if hasattr(ctypes.pythonapi, 'Py_IncRef'):
     def _pin_callback(cb):
@@ -1521,15 +1590,20 @@ def init(event_model=None):
                             pass
 
                         class ThreadEvent(object):
+                            has_async_ = hasattr(gevent.get_hub().loop, 'async_')
                             def __init__(self):
-                                self.async = gevent.get_hub().loop.async()
-                                self.async.start(nullf)
+                                if ThreadEvent.has_async_:
+                                    self.gevent_async = gevent.get_hub().loop.async_()
+                                else:
+                                    self.gevent_async = getattr(gevent.get_hub().loop, 'async')()
+
+                                self.gevent_async.start(nullf)
 
                             def set(self):
-                                self.async.send()
+                                self.gevent_async.send()
 
                             def wait(self):
-                                gevent.get_hub().wait(self.async)
+                                gevent.get_hub().wait(self.gevent_async)
                     else:
                         # gevent 0.x doesn't have async, so use a pipe.  This doesn't work on Windows.
                         if platform.system() == 'Windows':
@@ -1652,13 +1726,11 @@ def init_v13(local_address, event_model=None):
     return init(event_model)
 
 
-open_clusters = {}
 open_databases = {}
 
 cacheLock = threading.Lock()
 
-
-def open(cluster_file=None, database_name=b'DB', event_model=None):
+def open(cluster_file=None, event_model=None):
     """Opens the given database (or the default database of the cluster indicated
     by the fdb.cluster file in a platform-specific location, if no cluster_file
     or database_name is provided).  Initializes the FDB interface as required."""
@@ -1668,17 +1740,21 @@ def open(cluster_file=None, database_name=b'DB', event_model=None):
             init(event_model=event_model)
 
     with cacheLock:
-        if cluster_file not in open_clusters:
-            open_clusters[cluster_file] = create_cluster(cluster_file)
+        if cluster_file not in open_databases:
+            open_databases[cluster_file] = create_database(cluster_file)
 
-        if (cluster_file, database_name) not in open_databases:
-            open_databases[(cluster_file, database_name)] = open_clusters[cluster_file].open_database(database_name)
+        return open_databases[(cluster_file)]
+    
 
-        return open_databases[(cluster_file, database_name)]
+def open_v609(cluster_file=None, database_name=b'DB', event_model=None):
+    if database_name != b'DB':
+        raise FDBError(2013) # invalid_database_name
+
+    return open(cluster_file, event_model)
 
 
 def open_v13(cluster_id_path, database_name, local_address=None, event_model=None):
-    return open(cluster_id_path, database_name, event_model)
+    return open_v609(cluster_id_path, database_name, event_model)
 
 
 import atexit

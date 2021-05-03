@@ -23,163 +23,150 @@
 
 #include <flow/flow.h>
 
-#define FDB_API_VERSION 520
+#define FDB_API_VERSION 700
 #include <bindings/c/foundationdb/fdb_c.h>
 #undef DLLEXPORT
 
 #include "FDBLoanerTypes.h"
 
 namespace FDB {
-
-	class DatabaseContext : public ReferenceCounted<DatabaseContext>, NonCopyable {
-		friend class Cluster;
-		friend class Transaction;
-	public:
-		~DatabaseContext() {
-			fdb_database_destroy( db );
+struct CFuture : NonCopyable, ReferenceCounted<CFuture>, FastAllocated<CFuture> {
+	CFuture() : f(nullptr) {}
+	explicit CFuture(FDBFuture* f) : f(f) {}
+	~CFuture() {
+		if (f) {
+			fdb_future_destroy(f);
 		}
+	}
 
-		void setDatabaseOption(FDBDatabaseOption option, Optional<StringRef> value = Optional<StringRef>());
+	void blockUntilReady();
 
-	private:
-		FDBDatabase* db;
-		explicit DatabaseContext( FDBDatabase* db ) : db(db) {}
-	};
+	FDBFuture* f;
+};
 
-	class Cluster : public ReferenceCounted<Cluster>, NonCopyable {
-	public:
-		~Cluster() {
-			fdb_cluster_destroy( c );
-		}
+template <class T>
+class FDBStandalone : public T {
+public:
+	FDBStandalone() {}
+	FDBStandalone(Reference<CFuture> f, T const& t) : T(t), f(f) {}
+	FDBStandalone(FDBStandalone const& o) : T((T const&)o), f(o.f) {}
 
-		Reference<DatabaseContext> createDatabase();
+private:
+	Reference<CFuture> f;
+};
 
-	private:
-		explicit Cluster( FDBCluster* c ) : c(c) {}
-		FDBCluster* c;
+class ReadTransaction : public ReferenceCounted<ReadTransaction> {
+public:
+	virtual ~ReadTransaction(){};
+	virtual void setReadVersion(Version v) = 0;
+	virtual Future<Version> getReadVersion() = 0;
 
-		friend class API;
-	};
+	virtual Future<Optional<FDBStandalone<ValueRef>>> get(const Key& key, bool snapshot = false) = 0;
+	virtual Future<FDBStandalone<KeyRef>> getKey(const KeySelector& key, bool snapshot = false) = 0;
+	virtual Future<Void> watch(const Key& key) = 0;
 
-	class API {
-	public:
-		static API* selectAPIVersion(int apiVersion);
-		static API* getInstance();
-		static bool isAPIVersionSelected();
+	virtual Future<FDBStandalone<RangeResultRef>> getRange(
+	    const KeySelector& begin,
+	    const KeySelector& end,
+	    GetRangeLimits limits = GetRangeLimits(),
+	    bool snapshot = false,
+	    bool reverse = false,
+	    FDBStreamingMode streamingMode = FDB_STREAMING_MODE_SERIAL) = 0;
+	virtual Future<FDBStandalone<RangeResultRef>> getRange(const KeySelector& begin,
+	                                                       const KeySelector& end,
+	                                                       int limit,
+	                                                       bool snapshot = false,
+	                                                       bool reverse = false,
+	                                                       FDBStreamingMode streamingMode = FDB_STREAMING_MODE_SERIAL) {
+		return getRange(begin, end, GetRangeLimits(limit), snapshot, reverse, streamingMode);
+	}
+	virtual Future<FDBStandalone<RangeResultRef>> getRange(const KeyRange& keys,
+	                                                       int limit,
+	                                                       bool snapshot = false,
+	                                                       bool reverse = false,
+	                                                       FDBStreamingMode streamingMode = FDB_STREAMING_MODE_SERIAL) {
+		return getRange(KeySelector(firstGreaterOrEqual(keys.begin), keys.arena()),
+		                KeySelector(firstGreaterOrEqual(keys.end), keys.arena()),
+		                limit,
+		                snapshot,
+		                reverse,
+		                streamingMode);
+	}
+	virtual Future<FDBStandalone<RangeResultRef>> getRange(const KeyRange& keys,
+	                                                       GetRangeLimits limits = GetRangeLimits(),
+	                                                       bool snapshot = false,
+	                                                       bool reverse = false,
+	                                                       FDBStreamingMode streamingMode = FDB_STREAMING_MODE_SERIAL) {
+		return getRange(KeySelector(firstGreaterOrEqual(keys.begin), keys.arena()),
+		                KeySelector(firstGreaterOrEqual(keys.end), keys.arena()),
+		                limits,
+		                snapshot,
+		                reverse,
+		                streamingMode);
+	}
 
-		void setNetworkOption(FDBNetworkOption option, Optional<StringRef> value = Optional<StringRef>());
+	virtual Future<int64_t> getEstimatedRangeSizeBytes(const KeyRange& keys) = 0;
+	virtual Future<FDBStandalone<VectorRef<KeyRef>>> getRangeSplitPoints(const KeyRange& range, int64_t chunkSize) = 0;
 
-		void setupNetwork();
-		void runNetwork();
-		void stopNetwork();
+	virtual void addReadConflictRange(KeyRangeRef const& keys) = 0;
+	virtual void addReadConflictKey(KeyRef const& key) = 0;
 
-		Reference<Cluster> createCluster( std::string const& connFilename );
+	virtual void setOption(FDBTransactionOption option, Optional<StringRef> value = Optional<StringRef>()) = 0;
 
-		bool evaluatePredicate(FDBErrorPredicate pred, Error const& e);
-		int getAPIVersion() const;
+	virtual Future<Void> onError(Error const& e) = 0;
 
-	private:
-		static API* instance;
+	virtual void cancel() = 0;
+	virtual void reset() = 0;
+};
 
-		API(int version);
-		int version;
-	};
+class Transaction : public ReadTransaction {
+public:
+	virtual void addWriteConflictRange(KeyRangeRef const& keys) = 0;
+	virtual void addWriteConflictKey(KeyRef const& key) = 0;
 
-	struct CFuture : NonCopyable, ReferenceCounted<CFuture>, FastAllocated<CFuture> {
-		CFuture() : f(NULL) {}
-		explicit CFuture( FDBFuture* f ) : f(f) {}
-		~CFuture() {
-			if (f) {
-				fdb_future_destroy(f);
-			}
-		}
+	virtual void atomicOp(const KeyRef& key, const ValueRef& operand, FDBMutationType operationType) = 0;
+	virtual void set(const KeyRef& key, const ValueRef& value) = 0;
+	virtual void clear(const KeyRangeRef& range) = 0;
+	virtual void clear(const KeyRef& key) = 0;
 
-		void blockUntilReady();
+	virtual Future<Void> commit() = 0;
+	virtual Version getCommittedVersion() = 0;
+	virtual Future<int64_t> getApproximateSize() = 0;
+	virtual Future<FDBStandalone<StringRef>> getVersionstamp() = 0;
+};
 
-		FDBFuture* f;
-	};
+class Database : public ReferenceCounted<Database> {
+public:
+	virtual ~Database(){};
+	virtual Reference<Transaction> createTransaction() = 0;
+	virtual void setDatabaseOption(FDBDatabaseOption option, Optional<StringRef> value = Optional<StringRef>()) = 0;
+	virtual Future<int64_t> rebootWorker(const StringRef& address, bool check = false, int duration = 0) = 0;
+	virtual Future<Void> forceRecoveryWithDataLoss(const StringRef& dcid) = 0;
+	virtual Future<Void> createSnapshot(const StringRef& uid, const StringRef& snap_command) = 0;
+};
 
-	template <class T>
-	class FDBStandalone : public T {
-	public:
-		FDBStandalone() {}
-		FDBStandalone( Reference<CFuture> f, T const& t ) : T(t), f(f) {}
-		FDBStandalone( FDBStandalone const& o ) : T((T const&)o), f(o.f) {}
-	private:
-		Reference<CFuture> f;
-	};
+class API {
+public:
+	static API* selectAPIVersion(int apiVersion);
+	static API* getInstance();
+	static bool isAPIVersionSelected();
 
-	class Transaction : public ReferenceCounted<Transaction>, private NonCopyable, public FastAllocated<Transaction> {
-	public:
-		explicit Transaction( Reference<DatabaseContext> const& db );
-		~Transaction() {
-			if (tr) {
-				fdb_transaction_destroy(tr);
-			}
-		}
+	void setNetworkOption(FDBNetworkOption option, Optional<StringRef> value = Optional<StringRef>());
 
-		void setVersion( Version v );
-		Future<Version> getReadVersion();
+	void setupNetwork();
+	void runNetwork();
+	void stopNetwork();
 
-		Future< Optional<FDBStandalone<ValueRef>> > get( const Key& key, bool snapshot = false );
-		Future< Void > watch( const Key& key );
-		Future< FDBStandalone<KeyRef> > getKey( const KeySelector& key, bool snapshot = false );
-		Future< FDBStandalone<RangeResultRef> > getRange( const KeySelector& begin, const KeySelector& end, GetRangeLimits limits = GetRangeLimits(), bool snapshot = false, bool reverse = false, FDBStreamingMode streamingMode = FDB_STREAMING_MODE_SERIAL);
-		Future< FDBStandalone<RangeResultRef> > getRange( const KeySelector& begin, const KeySelector& end, int limit, bool snapshot = false, bool reverse = false, FDBStreamingMode streamingMode = FDB_STREAMING_MODE_SERIAL ) {
-			return getRange( begin, end, GetRangeLimits(limit), snapshot, reverse, streamingMode );
-		}
-		Future< FDBStandalone<RangeResultRef> > getRange( const KeyRange& keys, int limit, bool snapshot = false, bool reverse = false, FDBStreamingMode streamingMode = FDB_STREAMING_MODE_SERIAL ) {
-			return getRange( KeySelector( firstGreaterOrEqual(keys.begin), keys.arena() ),
-							 KeySelector( firstGreaterOrEqual(keys.end), keys.arena() ),
-							 limit, snapshot, reverse, streamingMode );
-		}
-		Future< FDBStandalone<RangeResultRef> > getRange( const KeyRange& keys, GetRangeLimits limits = GetRangeLimits(), bool snapshot = false, bool reverse = false, FDBStreamingMode streamingMode = FDB_STREAMING_MODE_SERIAL ) {
-			return getRange( KeySelector( firstGreaterOrEqual(keys.begin), keys.arena() ),
-							 KeySelector( firstGreaterOrEqual(keys.end), keys.arena() ),
-							 limits, snapshot, reverse, streamingMode );
-		}
+	Reference<Database> createDatabase(std::string const& connFilename = "");
 
-		// Future< Standalone<VectorRef<const char*>> > getAddressesForKey(const Key& key);
+	bool evaluatePredicate(FDBErrorPredicate pred, Error const& e);
+	int getAPIVersion() const;
 
-		void addReadConflictRange( KeyRangeRef const& keys );
-		void addReadConflictKey( KeyRef const& key );
-		void addWriteConflictRange( KeyRangeRef const& keys );
-		void addWriteConflictKey( KeyRef const& key );
-		// void makeSelfConflicting() { tr.makeSelfConflicting(); }
+private:
+	static API* instance;
 
-		void atomicOp( const KeyRef& key, const ValueRef& operand, FDBMutationType operationType );
-		void set( const KeyRef& key, const ValueRef& value );
-		void clear( const KeyRangeRef& range );
-		void clear( const KeyRef& key );
-
-		Future<Void> commit();
-		Version getCommittedVersion();
-		Future<FDBStandalone<StringRef>> getVersionstamp();
-
-		void setOption( FDBTransactionOption option, Optional<StringRef> value = Optional<StringRef>() );
-
-		Future<Void> onError( Error const& e );
-
-		void cancel();
-		void reset();
-		// double getBackoff() { return tr.getBackoff(); }
-		// void debugTransaction(UID dID) { tr.debugTransaction(dID); }
-
-		Transaction() : tr(NULL) {}
-		Transaction( Transaction&& r ) noexcept(true) {
-			tr = r.tr;
-			r.tr = NULL;
-		}
-		Transaction& operator=( Transaction&& r ) noexcept(true) {
-			tr = r.tr;
-			r.tr = NULL;
-			return *this;
-		}
-
-	private:
-		FDBTransaction* tr;
-	};
-
-}
-
-#endif
+	API(int version);
+	int version;
+};
+} // namespace FDB
+#endif // FDB_FLOW_FDB_FLOW_H

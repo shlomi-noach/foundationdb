@@ -33,12 +33,12 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 
-import com.apple.foundationdb.Cluster;
 import com.apple.foundationdb.Database;
 import com.apple.foundationdb.FDB;
 import com.apple.foundationdb.FDBException;
 import com.apple.foundationdb.KeySelector;
 import com.apple.foundationdb.KeyValue;
+import com.apple.foundationdb.KeyArrayResult;
 import com.apple.foundationdb.MutationType;
 import com.apple.foundationdb.Range;
 import com.apple.foundationdb.StreamingMode;
@@ -224,6 +224,18 @@ public class AsyncStackTester {
 				inst.push(inst.readTcx.readAsync(readTr -> readTr.get((byte[]) param)));
 			});
 		}
+		else if (op == StackOperation.GET_ESTIMATED_RANGE_SIZE) {
+			List<Object> params = inst.popParams(2).join();
+			return inst.readTr.getEstimatedRangeSizeBytes((byte[])params.get(0), (byte[])params.get(1)).thenAcceptAsync(size -> {
+				inst.push("GOT_ESTIMATED_RANGE_SIZE".getBytes());
+			}, FDB.DEFAULT_EXECUTOR);
+		}
+		else if (op == StackOperation.GET_RANGE_SPLIT_POINTS) {
+			List<Object> params = inst.popParams(3).join();
+			return inst.readTr.getRangeSplitPoints((byte[])params.get(0), (byte[])params.get(1), (long)params.get(2)).thenAcceptAsync(splitPoints -> {
+				inst.push("GOT_RANGE_SPLIT_POINTS".getBytes());
+			}, FDB.DEFAULT_EXECUTOR);
+		}
 		else if(op == StackOperation.GET_RANGE) {
 			return inst.popParams(5).thenComposeAsync(params -> {
 				int limit = StackUtils.getInt(params.get(2));
@@ -283,6 +295,11 @@ public class AsyncStackTester {
 
 			return AsyncUtil.DONE;
 		}
+		else if(op == StackOperation.GET_APPROXIMATE_SIZE) {
+			return inst.tr.getApproximateSize().thenAcceptAsync(size -> {
+				inst.push("GOT_APPROXIMATE_SIZE".getBytes());
+			}, FDB.DEFAULT_EXECUTOR);
+		}
 		else if(op == StackOperation.GET_VERSIONSTAMP) {
 			try {
 				inst.push(inst.tr.getVersionstamp());
@@ -317,8 +334,8 @@ public class AsyncStackTester {
 					if(t != null) {
 						inst.context.newTransaction(oldTr); // Other bindings allow reuse of non-retryable transactions, so we need to emulate that behavior.
 					}
-					else {
-						inst.setTransaction(oldTr, tr);
+					else if(!inst.setTransaction(oldTr, tr)) {
+						tr.close();
 					}
 				}).thenApply(v -> null);
 
@@ -413,7 +430,11 @@ public class AsyncStackTester {
 				return inst.popParams(listSize).thenAcceptAsync(rawElements -> {
 					List<Tuple> tuples = new ArrayList<>(listSize);
 					for(Object o : rawElements) {
-						tuples.add(Tuple.fromBytes((byte[])o));
+						// Unpacking a tuple keeps around the serialized representation and uses
+						// it for comparison if it's available. To test semantic comparison, recreate
+						// the tuple from the item list.
+						Tuple t = Tuple.fromBytes((byte[])o);
+						tuples.add(Tuple.fromList(t.getItems()));
 					}
 					Collections.sort(tuples);
 					for(Tuple t : tuples) {
@@ -472,6 +493,29 @@ public class AsyncStackTester {
 						throw e;
 					}
 				}
+
+				Database db = tr.getDatabase();
+				db.options().setLocationCacheSize(100001);
+				db.options().setMaxWatches(10001);
+				db.options().setDatacenterId("dc_id");
+				db.options().setMachineId("machine_id");
+				db.options().setSnapshotRywEnable();
+				db.options().setSnapshotRywDisable();
+				db.options().setTransactionLoggingMaxFieldLength(1000);
+				db.options().setTransactionTimeout(100000);
+				db.options().setTransactionTimeout(0);
+				db.options().setTransactionMaxRetryDelay(100);
+				db.options().setTransactionRetryLimit(10);
+				db.options().setTransactionRetryLimit(-1);
+				db.options().setTransactionCausalReadRisky();
+				db.options().setTransactionIncludePortInAddress();
+
+				// Test network busyness
+				double busyness = db.getMainThreadBusyness();
+				if (busyness < 0) {
+					throw new IllegalStateException("Network busyness cannot be less than 0");
+				}
+
 				tr.options().setPrioritySystemImmediate();
 				tr.options().setPriorityBatch();
 				tr.options().setCausalReadRisky();
@@ -479,14 +523,16 @@ public class AsyncStackTester {
 				tr.options().setReadYourWritesDisable();
 				tr.options().setReadSystemKeys();
 				tr.options().setAccessSystemKeys();
-				tr.options().setDurabilityDevNullIsWebScale();
+				tr.options().setTransactionLoggingMaxFieldLength(1000);
 				tr.options().setTimeout(60*1000);
 				tr.options().setRetryLimit(50);
 				tr.options().setMaxRetryDelay(100);
 				tr.options().setUsedDuringCommitProtectionDisable();
-				tr.options().setTransactionLoggingEnable("my_transaction");
+				tr.options().setDebugTransactionIdentifier("my_transaction");
+				tr.options().setLogTransaction();
 				tr.options().setReadLockAware();
 				tr.options().setLockAware();
+				tr.options().setIncludePortInAddress();
 
 				if(!(new FDBException("Fake", 1020)).isRetryable() ||
 						(new FDBException("Fake", 10)).isRetryable())
@@ -640,10 +686,7 @@ public class AsyncStackTester {
 			};
 
 			if(operations == null || ++currentOp == operations.size()) {
-				Transaction tr = db.createTransaction();
-
-				return tr.getRange(nextKey, endKey, 1000).asList()
-				.whenComplete((x, t) -> tr.close())
+				return db.readAsync(readTr -> readTr.getRange(nextKey, endKey, 1000).asList())
 				.thenComposeAsync(next -> {
 					if(next.size() < 1) {
 						//System.out.println("No key found after: " + ByteArrayUtil.printable(nextKey.getKey()));
@@ -724,18 +767,12 @@ public class AsyncStackTester {
 			throw new IllegalStateException("API version not correctly set to " + apiVersion);
 		}
 		//ExecutorService executor = Executors.newFixedThreadPool(2);
-		Cluster cl = fdb.createCluster(args.length > 2 ? args[2] : null);
-
-		Database db = cl.openDatabase();
+		Database db = fdb.open(args.length > 2 ? args[2] : null);
 
 		Context c = new AsynchronousContext(db, prefix);
 		//System.out.println("Starting test...");
 		c.run();
 		//System.out.println("Done with test.");
-
-		/*byte[] key = Tuple.from("test_results".getBytes(), 5).pack();
-		byte[] bs = db.createTransaction().get(key).get();
-		System.out.println("output of " + ByteArrayUtil.printable(key) + " as: " + ByteArrayUtil.printable(bs));*/
 
 		db.close();
 		System.gc();

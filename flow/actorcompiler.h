@@ -20,7 +20,11 @@
 
 #ifndef POST_ACTOR_COMPILER
 
-#include "flow.h"
+template <typename T>
+struct Future;
+struct Never;
+template <typename T>
+struct FutureStream;
 
 // These are for intellisense to do proper type inferring, etc. They are no included at build time.
 #ifndef NO_INTELLISENSE
@@ -28,15 +32,25 @@
 #define DESCR
 #define state
 #define UNCANCELLABLE
-#define choose if(1)
-#define when(x) for(x;;)
-template <class T> T wait( const Future<T>& );
-template <class T> T waitNext( const FutureStream<T>& );
+#define choose if (1)
+#define when(...) for (__VA_ARGS__;;)
+template <class T>
+T wait(const Future<T>&);
+void wait(const Never&);
+template <class T>
+T waitNext(const FutureStream<T>&);
 #endif
 
 #endif
 
-#include "flow.h"
-#define loop while(true)
+#define loop while (true)
 
-#pragma warning( disable: 4355 )	// 'this' : used in base member initializer list
+#ifdef NO_INTELLISENSE
+#define THIS this
+#define THIS_ADDR uintptr_t(this)
+#else
+#define THIS nullptr
+#define THIS_ADDR uintptr_t(nullptr)
+#endif
+
+#pragma warning(disable : 4355) // 'this' : used in base member initializer list

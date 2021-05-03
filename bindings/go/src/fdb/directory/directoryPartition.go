@@ -45,6 +45,10 @@ func (dp directoryPartition) Pack(t tuple.Tuple) fdb.Key {
 	panic("cannot pack keys using the root of a directory partition")
 }
 
+func (dp directoryPartition) PackWithVersionstamp(t tuple.Tuple) (fdb.Key, error) {
+	panic("cannot pack keys using the root of a directory partition")
+}
+
 func (dp directoryPartition) Unpack(k fdb.KeyConvertible) (tuple.Tuple, error) {
 	panic("cannot unpack keys using the root of a directory partition")
 }
@@ -72,9 +76,8 @@ func (dp directoryPartition) GetLayer() []byte {
 func (dp directoryPartition) getLayerForPath(path []string) directoryLayer {
 	if len(path) == 0 {
 		return dp.parentDirectoryLayer
-	} else {
-		return dp.directoryLayer
 	}
+	return dp.directoryLayer
 }
 
 func (dp directoryPartition) MoveTo(t fdb.Transactor, newAbsolutePath []string) (DirectorySubspace, error) {

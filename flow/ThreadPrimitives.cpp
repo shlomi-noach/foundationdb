@@ -18,8 +18,8 @@
  * limitations under the License.
  */
 
-#include "ThreadPrimitives.h"
-#include "Trace.h"
+#include "flow/ThreadPrimitives.h"
+#include "flow/Trace.h"
 #include <stdint.h>
 #include <iostream>
 #include <errno.h>
@@ -32,20 +32,24 @@
 #undef max
 #endif
 
-extern std::string format( const char *form, ... );
+extern std::string format(const char* form, ...);
 
 Event::Event() {
 #ifdef _WIN32
-	ev = CreateEvent(NULL, FALSE, FALSE, NULL);
-#elif defined(__linux__)
+	ev = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+#elif defined(__linux__) || defined(__FreeBSD__)
 	int result = sem_init(&sem, 0, 0);
 	if (result)
-		criticalError(FDB_EXIT_INIT_SEMAPHORE, "UnableToInitializeSemaphore", format("Could not initialize semaphore - %s", strerror(errno)).c_str());
+		criticalError(FDB_EXIT_INIT_SEMAPHORE,
+		              "UnableToInitializeSemaphore",
+		              format("Could not initialize semaphore - %s", strerror(errno)).c_str());
 #elif defined(__APPLE__)
 	self = mach_task_self();
 	kern_return_t ret = semaphore_create(self, &sem, SYNC_POLICY_FIFO, 0);
-	if(ret != KERN_SUCCESS)
-		criticalError(FDB_EXIT_INIT_SEMAPHORE, "UnableToInitializeSemaphore", format("Could not initialize semaphore - %s", strerror(errno)).c_str());
+	if (ret != KERN_SUCCESS)
+		criticalError(FDB_EXIT_INIT_SEMAPHORE,
+		              "UnableToInitializeSemaphore",
+		              format("Could not initialize semaphore - %s", strerror(errno)).c_str());
 #else
 #error Port me!
 #endif
@@ -54,7 +58,7 @@ Event::Event() {
 Event::~Event() {
 #ifdef _WIN32
 	CloseHandle(ev);
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__FreeBSD__)
 	sem_destroy(&sem);
 #elif defined(__APPLE__)
 	semaphore_destroy(self, sem);
@@ -66,7 +70,7 @@ Event::~Event() {
 void Event::set() {
 #ifdef _WIN32
 	SetEvent(ev);
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__FreeBSD__)
 	sem_post(&sem);
 #elif defined(__APPLE__)
 	semaphore_signal(sem);
@@ -78,7 +82,7 @@ void Event::set() {
 void Event::block() {
 #ifdef _WIN32
 	WaitForSingleObject(ev, INFINITE);
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__FreeBSD__)
 	int ret;
 	do {
 		ret = sem_wait(&sem);

@@ -18,34 +18,40 @@
  * limitations under the License.
  */
 
-#include "actorcompiler.h"
-#include "ActorCollection.h"
-#include "IndexedSet.h"
+#include "flow/ActorCollection.h"
+#include "flow/IndexedSet.h"
+#include "flow/UnitTest.h"
+#include "flow/actorcompiler.h" // This must be the last #include.
 
-ACTOR Future<Void> actorCollection( FutureStream<Future<Void>> addActor, int* pCount, double *lastChangeTime, double *idleTime, double *allTime, bool returnWhenEmptied )
-{
+ACTOR Future<Void> actorCollection(FutureStream<Future<Void>> addActor,
+                                   int* pCount,
+                                   double* lastChangeTime,
+                                   double* idleTime,
+                                   double* allTime,
+                                   bool returnWhenEmptied) {
 	state int64_t nextTag = 0;
 	state Map<int64_t, Future<Void>> tag_streamHelper;
 	state PromiseStream<int64_t> complete;
 	state PromiseStream<Error> errors;
 	state int count = 0;
-	if (!pCount) pCount = &count;
+	if (!pCount)
+		pCount = &count;
 
 	loop choose {
-		when (Future<Void> f = waitNext(addActor)) {
+		when(Future<Void> f = waitNext(addActor)) {
 			int64_t t = nextTag++;
-			tag_streamHelper[t] = streamHelper( complete, errors, tag(f, t) );
+			tag_streamHelper[t] = streamHelper(complete, errors, tag(f, t));
 			++*pCount;
-			if( *pCount == 1 && lastChangeTime && idleTime && allTime) {
+			if (*pCount == 1 && lastChangeTime && idleTime && allTime) {
 				double currentTime = now();
 				*idleTime += currentTime - *lastChangeTime;
 				*allTime += currentTime - *lastChangeTime;
 				*lastChangeTime = currentTime;
 			}
 		}
-		when (int64_t t = waitNext(complete.getFuture())) {
+		when(int64_t t = waitNext(complete.getFuture())) {
 			if (!--*pCount) {
-				if( lastChangeTime && idleTime && allTime) {
+				if (lastChangeTime && idleTime && allTime) {
 					double currentTime = now();
 					*allTime += currentTime - *lastChangeTime;
 					*lastChangeTime = currentTime;
@@ -55,6 +61,23 @@ ACTOR Future<Void> actorCollection( FutureStream<Future<Void>> addActor, int* pC
 			}
 			tag_streamHelper.erase(t);
 		}
-		when (Error e = waitNext(errors.getFuture())) { throw e; }
+		when(Error e = waitNext(errors.getFuture())) { throw e; }
 	}
 }
+
+template <class T, class U>
+struct Traceable<std::pair<T, U>> {
+	static constexpr bool value = Traceable<T>::value && Traceable<U>::value;
+	static std::string toString(const std::pair<T, U>& p) {
+		auto tStr = Traceable<T>::toString(p.first);
+		auto uStr = Traceable<U>::toString(p.second);
+		std::string result(tStr.size() + uStr.size() + 3, 'x');
+		std::copy(tStr.begin(), tStr.end(), result.begin());
+		auto iter = result.begin() + tStr.size();
+		*(iter++) = ' ';
+		*(iter++) = '-';
+		*(iter++) = ' ';
+		std::copy(uStr.begin(), uStr.end(), iter);
+		return result;
+	}
+};

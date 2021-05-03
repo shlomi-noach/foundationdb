@@ -23,7 +23,23 @@
 #pragma once
 
 #include "fdbclient/FDBTypes.h"
-#include "IDiskQueue.h"
+#include "fdbserver/IDiskQueue.h"
+
+struct PeekTxsInfo {
+	int8_t primaryLocality;
+	int8_t secondaryLocality;
+	Version knownCommittedVersion;
+
+	bool operator==(const PeekTxsInfo& r) const {
+		return primaryLocality == r.primaryLocality && secondaryLocality == r.secondaryLocality &&
+		       knownCommittedVersion == r.knownCommittedVersion;
+	}
+	bool operator!=(const PeekTxsInfo& r) const { return !(*this == r); }
+
+	PeekTxsInfo(int8_t primaryLocality, int8_t secondaryLocality, Version knownCommittedVersion)
+	  : primaryLocality(primaryLocality), secondaryLocality(secondaryLocality),
+	    knownCommittedVersion(knownCommittedVersion) {}
+};
 
 class LogSystemDiskQueueAdapter : public IDiskQueue {
 public:
@@ -34,48 +50,79 @@ public:
 
 	// Because the transaction subsystem will need to control the actual pushing of
 	// committed information to the ILogSystem, commit() in this interface doesn't directly
-	// call ILogSystem::push().  Instead it makes a commit message available through 
+	// call ILogSystem::push().  Instead it makes a commit message available through
 	// getCommitMessage(), and doesn't return until its acknowledge promise is set.
 	// The caller is responsible for calling ILogSystem::push() and ILogSystem::pop() with the results.
 
 	// It does, however, peek the specified tag directly at recovery time.
 
-	LogSystemDiskQueueAdapter( Reference<ILogSystem> logSystem, Tag tag, bool recover=true ) : logSystem(logSystem), tag(tag), enableRecovery(recover), recoveryLoc(1), recoveryQueueLoc(1), poppedUpTo(0), nextCommit(1), recoveryQueueDataSize(0) {
-		if (enableRecovery)
-			cursor = logSystem->peek( 0, tag, true );
+	LogSystemDiskQueueAdapter(Reference<ILogSystem> logSystem,
+	                          Reference<AsyncVar<PeekTxsInfo>> peekLocality,
+	                          Version txsPoppedVersion,
+	                          bool recover)
+	  : logSystem(logSystem), peekLocality(peekLocality), enableRecovery(recover), recoveryLoc(txsPoppedVersion),
+	    recoveryQueueLoc(txsPoppedVersion), poppedUpTo(0), nextCommit(1), recoveryQueueDataSize(0), peekTypeSwitches(0),
+	    hasDiscardedData(false), totalRecoveredBytes(0) {
+		if (enableRecovery) {
+			localityChanged = peekLocality ? peekLocality->onChange() : Never();
+			cursor = logSystem->peekTxs(UID(),
+			                            txsPoppedVersion,
+			                            peekLocality ? peekLocality->get().primaryLocality : tagLocalityInvalid,
+			                            peekLocality ? peekLocality->get().knownCommittedVersion : invalidVersion,
+			                            true);
+		}
 	}
 
 	struct CommitMessage {
-		Standalone<VectorRef<VectorRef<uint8_t>>> messages;    // push this into the logSystem with `tag`
-		Version popTo;                                         // pop this from the logSystem with `tag`
-		Promise<Void> acknowledge;                             // then send Void to this, so commit() can return
+		Standalone<VectorRef<VectorRef<uint8_t>>> messages; // push this into the logSystem with `tag`
+		Version popTo; // pop this from the logSystem with `tag`
+		Promise<Void> acknowledge; // then send Void to this, so commit() can return
 	};
 
 	// Set the version of the next push or commit (or a lower version)
-	// If lower, locations returned by the IDiskQueue interface will be conservative, so things that could be popped might not be
-	void setNextVersion( Version next ) { nextCommit = next; }
+	// If lower, locations returned by the IDiskQueue interface will be conservative, so things that could be popped
+	// might not be
+	void setNextVersion(Version next) { nextCommit = next; }
 
 	// Return the next commit message resulting from a call to commit().
 	Future<CommitMessage> getCommitMessage();
 
 	// IClosable interface
-	virtual Future<Void> getError();
-	virtual Future<Void> onClosed();
-	virtual void dispose();
-	virtual void close();
+	Future<Void> getError() override;
+	Future<Void> onClosed() override;
+	void dispose() override;
+	void close() override;
 
 	// IDiskQueue interface
-	virtual Future<Standalone<StringRef>> readNext( int bytes );
-	virtual IDiskQueue::location getNextReadLocation();
-	virtual IDiskQueue::location push( StringRef contents );
-	virtual void pop( IDiskQueue::location upTo );
-	virtual Future<Void> commit();
-	virtual StorageBytes getStorageBytes() { ASSERT(false); throw internal_error(); }
-	virtual int getCommitOverhead() { return 0; } //SOMEDAY: could this be more accurate?
+	Future<bool> initializeRecovery(location recoverAt) override { return false; }
+	Future<Standalone<StringRef>> readNext(int bytes) override;
+	IDiskQueue::location getNextReadLocation() const override;
+	IDiskQueue::location getNextCommitLocation() const override {
+		ASSERT(false);
+		throw internal_error();
+	}
+	IDiskQueue::location getNextPushLocation() const override {
+		ASSERT(false);
+		throw internal_error();
+	}
+	Future<Standalone<StringRef>> read(location start, location end, CheckHashes ch) override {
+		ASSERT(false);
+		throw internal_error();
+	}
+	IDiskQueue::location push(StringRef contents) override;
+	void pop(IDiskQueue::location upTo) override;
+	Future<Void> commit() override;
+	StorageBytes getStorageBytes() const override {
+		ASSERT(false);
+		throw internal_error();
+	}
+	int getCommitOverhead() const override { return 0; } // SOMEDAY: could this be more accurate?
 
 private:
+	Reference<AsyncVar<PeekTxsInfo>> peekLocality;
+	Future<Void> localityChanged;
 	Reference<ILogSystem::IPeekCursor> cursor;
-	Tag tag;
+	int peekTypeSwitches;
 
 	// Recovery state (used while readNext() is being called repeatedly)
 	bool enableRecovery;
@@ -85,14 +132,18 @@ private:
 	int recoveryQueueDataSize;
 
 	// State for next commit() call
-	Standalone<VectorRef<VectorRef<uint8_t>>> pushedData;  // SOMEDAY: better representation?
+	Standalone<VectorRef<VectorRef<uint8_t>>> pushedData; // SOMEDAY: better representation?
 	Version poppedUpTo;
-	std::deque< Promise<CommitMessage> > commitMessages;
+	std::deque<Promise<CommitMessage>> commitMessages;
 	Version nextCommit;
+	bool hasDiscardedData;
+	int totalRecoveredBytes;
 
 	friend class LogSystemDiskQueueAdapterImpl;
 };
 
-LogSystemDiskQueueAdapter* openDiskQueueAdapter( Reference<ILogSystem> logSystem, Tag tag );
+LogSystemDiskQueueAdapter* openDiskQueueAdapter(Reference<ILogSystem> logSystem,
+                                                Reference<AsyncVar<PeekTxsInfo>> peekLocality,
+                                                Version txsPoppedVersion);
 
 #endif

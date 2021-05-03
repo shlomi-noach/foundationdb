@@ -9,9 +9,9 @@ What is the CAP Theorem?
 
 In 2000, Eric Brewer conjectured that a distributed system cannot simultaneously provide all three of the following desirable properties:
 
-    * Consistency: A read sees all previously completed writes.
-    * Availability: Reads and writes always succeed.
-    * Partition tolerance: Guaranteed properties are maintained even when network failures prevent some machines from communicating with others.
+* Consistency: A read sees all previously completed writes.
+* Availability: Reads and writes always succeed.
+* Partition tolerance: Guaranteed properties are maintained even when network failures prevent some machines from communicating with others.
 
 In 2002, Gilbert and Lynch proved this in the asynchronous and partially synchronous network models, so it is now commonly called the `CAP Theorem <http://en.wikipedia.org/wiki/CAP_theorem>`_.
 
@@ -22,7 +22,7 @@ What does choosing Availability mean?
 
 Let's consider an **AP** database. In such a database, reads and writes would always succeed, even when network connectivity is unavailable between nodes. If possible, these would certainly seem like desirable properties!
 
-However, the downside is stark. Imagine a simple distributed database consisting of two nodes and a network partition making them unable communicate. To be Available, each of the two nodes must continue to accept writes from clients.
+However, the downside is stark. Imagine a simple distributed database consisting of two nodes and a network partition making them unable to communicate. To be Available, each of the two nodes must continue to accept writes from clients.
 
 .. figure:: /images/AP_Partition.png
 

@@ -40,20 +40,20 @@
 
 .. |transaction-cancel-blurb| replace::
     Cancels the transaction. All pending or future uses of the transaction will |error-raise-type| a :ref:`transaction_cancelled <developer-guide-error-codes>` |error-type|. The transaction can be used again after it is |reset-func-name|.
-    
+
 .. |snapshot-blurb1| replace::
     Snapshot reads selectively relax FoundationDB's isolation property, reducing :ref:`conflicts <developer-guide-transaction-conflicts>` but making it harder to reason about concurrency.
 
 .. |snapshot-blurb2| replace::
-    By default, FoundationDB transactions guarantee :ref:`serializable isolation <ACID>`, resulting in a state that is *as if* transactions were executed one at a time, even if they were executed concurrently. Serializability has little performance cost when there are few :ref:`conflicts <developer-guide-transaction-conflicts>` but can be expensive when there are many. FoundationDB therefore also permits individual reads within a transaction to be done as snapshot reads.
+    By default, FoundationDB transactions guarantee :ref:`strictly serializable isolation <ACID>`, resulting in a state that is *as if* transactions were executed one at a time, even if they were executed concurrently. Serializability has little performance cost when there are few :ref:`conflicts <developer-guide-transaction-conflicts>` but can be expensive when there are many. FoundationDB therefore also permits individual reads within a transaction to be done as snapshot reads.
 
 .. |snapshot-blurb3| replace::
-    Snapshot reads differ from ordinary (serializable) reads by permitting the values they read to be modified by concurrent transactions, whereas serializable reads cause conflicts in that case. Like serializable reads, snapshot reads see the effects of prior writes in the same transaction. For more information on the use of snapshot reads, see :ref:`snapshot isolation`.
+    Snapshot reads differ from ordinary (strictly serializable) reads by permitting the values they read to be modified by concurrent transactions, whereas strictly serializable reads cause conflicts in that case. Like strictly serializable reads, snapshot reads see the effects of prior writes in the same transaction. For more information on the use of snapshot reads, see :ref:`snapshot isolation`.
 
 .. |snapshot-blurb4| replace::
     Snapshot reads also interact with transaction commit a little differently than normal reads. If a snapshot read is outstanding when transaction commit is called that read will immediately return an error. (Normally, transaction commit will wait until outstanding reads return before committing.)
 
-.. |keys-values-blurb| replace:: 
+.. |keys-values-blurb| replace::
     Keys and values in FoundationDB are simple byte strings.
 
 .. |keys-values-other-types-blurb| replace::
@@ -63,7 +63,7 @@
     In some cases, you may have objects that are used to *represent* specific keys or values (for example, see |subspace|). As a convenience, the language binding API can work seamlessly with such objects if they implement the |as-foundationdb-key| or |as-foundationdb-value| methods, respectively. API methods that accept a key will alternately accept an object that implements the |as-foundationdb-key| method. Likewise, API methods accepting a value will also accept an object that implements the |as-foundationdb-value| method.
 
 .. |as-foundationdb-warning| replace::
-    |as-foundationdb-key| and |as-foundationdb-value| are not intended to implement serialization protocols for object storage. Use these functions only when your object represents a specific key or value. 
+    |as-foundationdb-key| and |as-foundationdb-value| are not intended to implement serialization protocols for object storage. Use these functions only when your object represents a specific key or value.
 
 .. |database-blurb1| replace::
     |database-type| represents a FoundationDB database --- a mutable, lexicographically ordered mapping from binary keys to binary values.
@@ -79,39 +79,42 @@
 
 .. |keysel-blurb2| replace::
     For more about how key selectors work, see :ref:`key selectors`.
-    
+
 .. |database-atomic-ops-idempotency-note| replace::
 
     Note that since some atomic operations are not idempotent, the implicit use of |database-auto| could interact with a :ref:`commit_unknown_result <developer-guide-error-codes>` |error-type| in unpredictable ways. For more information, see :ref:`developer-guide-unknown-results`.
 
 .. |atomic-ops-blurb1| replace::
     An atomic operation is a single database command that carries out several logical steps: reading the value of a key, performing a transformation on that value, and writing the result. Different atomic operations perform different transformations. Like other database operations, an atomic operation is used within a transaction; however, its use within a transaction will not cause the transaction to conflict.
-    
+
 .. |atomic-ops-blurb2| replace::
     Atomic operations do not expose the current value of the key to the client but simply send the database the transformation to apply. In regard to conflict checking, an atomic operation is equivalent to a write without a read. It can only cause *other* transactions performing reads of the key to conflict.
-   
+
 .. |atomic-ops-blurb3| replace::
     By combining these logical steps into a single, read-free operation, FoundationDB can guarantee that the transaction will not conflict due to the operation. This makes atomic operations ideal for operating on keys that are frequently modified. A common example is the use of a key-value pair as a counter.
-    
+
 .. |atomic-ops-warning| replace::
-    If a transaction uses both an atomic operation and a serializable read on the same key, the benefits of using the atomic operation (for both conflict checking and performance) are lost.
+    If a transaction uses both an atomic operation and a strictly serializable read on the same key, the benefits of using the atomic operation (for both conflict checking and performance) are lost.
 
 .. |atomic-add1| replace::
-    Performs an addition of little-endian integers. If the existing value in the database is not present or shorter than ``param``, it is first extended to the length of ``param`` with zero bytes.  If ``param`` is shorter than the existing value in the database, the existing value is truncated to match the length of ``param``.
-    
+    Performs an addition of little-endian integers. If the existing value in the database is not present or shorter than ``param``, it is first extended to the length of ``param`` with zero bytes.  If ``param`` is shorter than the existing value in the database, the existing value is truncated to match the length of ``param``. In case of overflow, the result is truncated to the width of ``param``.
+
 .. |atomic-add2| replace::
     The integers to be added must be stored in a little-endian representation. They can be signed in two's complement representation or unsigned. You can add to an integer at a known offset in the value by prepending the appropriate number of zero bytes to ``param`` and padding with zero bytes to match the length of the value. However, this offset technique requires that you know the addition will not cause the integer field within the value to overflow.
- 
-.. |atomic-and| replace::   
+
+.. |atomic-and| replace::
     Performs a bitwise "and" operation. If the existing value in the database is not present, then ``param`` is stored in the database. If the existing value in the database is  shorter than ``param``, it is first extended to the length of ``param`` with zero bytes. If ``param`` is shorter than the existing value in the database, the existing value is truncated to match the length of ``param``.
-    
-.. |atomic-or| replace::   
+
+.. |atomic-or| replace::
     Performs a bitwise "or" operation. If the existing value in the database is not present or shorter than ``param``, it is first extended to the length of ``param`` with zero bytes. If ``param`` is shorter than the existing value in the database, the existing value is truncated to match the length of ``param``.
 
-.. |atomic-xor| replace::   
+.. |atomic-xor| replace::
     Performs a bitwise "xor" operation. If the existing value in the database is not present or shorter than ``param``, it is first extended to the length of ``param`` with zero bytes. If ``param`` is shorter than the existing value in the database, the existing value is truncated to match the length of ``param``.
 
-.. |atomic-max1| replace:: 
+.. |atomic-compare-and-clear| replace::
+   Performs an atomic ``compare and clear`` operation. If the existing value in the database is equal to the given value, then given key is cleared.
+
+.. |atomic-max1| replace::
     Sets the value in the database to the larger of the existing value and ``param``. If the existing value in the database is not present or shorter than ``param``, it is first extended to the length of ``param`` with zero bytes. If ``param`` is shorter than the existing value in the database, the existing value is truncated to match the length of ``param``.
 
 .. |atomic-max-min| replace::
@@ -125,29 +128,27 @@
 
 .. |atomic-byte-max| replace::
     Performs lexicographic comparison of byte strings. If the existing value in the database is not present, then ``param`` is stored. Otherwise the larger of the two values is then stored in the database.
-    
-.. |atomic-set-versionstamped-key-1| replace::
-    Transforms ``key`` using a versionstamp for the transaction. This key must be at least 12 bytes long. The final 2 bytes will be interpreted as a 16-bit little-endian integer denoting an index into the key at which to perform the transformation, and then trimmed off the key. The 10 bytes in the key beginning at the index will be overwritten with the versionstamp. If the index plus 10 bytes points past the end of the key, the result will be an error. Sets the transformed key in the database to ``param``.
 
-.. |atomic-set-versionstamped-key-2| replace::
-    This operation is not compatible with |read-your-writes-disable-option| and will generate an error if used with it.
+.. |atomic-set-versionstamped-key-1| replace::
+    Transforms ``key`` using a versionstamp for the transaction. This key must be at least 14 bytes long. The final 4 bytes will be interpreted as a 32-bit little-endian integer denoting an index into the key at which to perform the transformation, and then trimmed off the key. The 10 bytes in the key beginning at the index will be overwritten with the versionstamp. If the index plus 10 bytes points past the end of the key, the result will be an error. Sets the transformed key in the database to ``param``.
 
 .. |atomic-set-versionstamped-value| replace::
-    Transforms ``param`` using a versionstamp for the transaction. This parameter must be at least 10 bytes long, and the first 10 bytes will be overwritten with the versionstamp. Sets ``key`` in the database to the transformed parameter.
+    Transforms ``param`` using a versionstamp for the transaction. This parameter must be at least 14 bytes long. The final 4 bytes will be interpreted as a 32-bit little-endian integer denoting an index into the parameter at which to perform the transformation, and then trimmed off the key. The 10 bytes in the parameter beginning at the index will be overwritten with the versionstamp. If the index plus 10 bytes points past the end of the parameter, the result will be an error. Sets ``key`` in the database to the transformed parameter.
 
 .. |atomic-versionstamps-1| replace::
-    A versionstamp is a 10 byte, unique, monotonically (but not sequentially) increasing value for each committed transaction. The first 8 bytes are the committed version of the database. The last 2 bytes are monotonic in the serialization order for transactions.
+    A versionstamp is a 10 byte, unique, monotonically (but not sequentially) increasing value for each committed transaction. The first 8 bytes are the committed version of the database (serialized in big-endian order). The last 2 bytes are monotonic in the serialization order for transactions (serialized in big-endian order).
+
 
 .. |atomic-versionstamps-2| replace::
-    A transaction is not permitted to read any transformed key or value previously set within that transaction, and an attempt to do so will result in an error.
+    A transaction is not permitted to read any transformed key or value previously set within that transaction, and an attempt to do so will result in an ``accessed_unreadable`` error.  The range of keys marked unreadable when setting a versionstamped key begins at the transactions's read version if it is known, otherwise a versionstamp of all ``0x00`` bytes is conservatively assumed.  The upper bound of the unreadable range is a versionstamp of all ``0xFF`` bytes.
 
 .. |atomic-versionstamps-tuple-warning-key| replace::
-    At this time, versionstamped keys are not compatible with the Tuple layer except in Java and Python. Note that this implies versionstamped keys may not be used with the Subspace and Directory layers except in those languages.
- 
-.. |atomic-versionstamps-tuple-warning-value| replace::
-    At this time, versionstamped values are not compatible with the Tuple layer.
+    At this time, versionstamped keys are not compatible with the Tuple layer except in Java, Python, and Go. Note that this implies versionstamped keys may not be used with the Subspace and Directory layers except in those languages.
 
-.. |api-version| replace:: 510
+.. |atomic-versionstamps-tuple-warning-value| replace::
+    At this time, versionstamped values are not compatible with the Tuple layer except in Java, Python, and Go. Note that this implies versionstamped values may not be used with the Subspace and Directory layers except in those languages.
+
+.. |api-version| replace:: 700
 
 .. |streaming-mode-blurb1| replace::
     When using |get-range-func| and similar interfaces, API clients can request large ranges of the database to iterate over.  Making such a request doesn't necessarily mean that the client will consume all of the data in the range - sometimes the client doesn't know how far it intends to iterate in advance.  FoundationDB tries to balance latency and bandwidth by requesting data for iteration in batches.
@@ -160,18 +161,21 @@
 
 .. |tuple-layer-note| replace::
     For general guidance on tuple usage, see the discussion in the document on :ref:`Data Modeling <data-modeling-tuples>`.
-    
+
 .. |transaction-reset-blurb| replace::
-    Rollback a transaction, completely resetting it to its initial state. This is logically equivalent to destroying the transaction and creating a new one. 
+    Rollback a transaction, completely resetting it to its initial state. This is logically equivalent to destroying the transaction and creating a new one.
 
 .. |transaction-reset-cancel-warning| replace::
     Be careful if you are using |reset-func| and |cancel-func| concurrently with the same transaction. Since they negate each other's effects, a race condition between these calls will leave the transaction in an unknown state.
-    
+
 .. |transaction-commit-cancel-warning| replace::
     If your program attempts to cancel a transaction after |commit-func| has been called but before it returns, unpredictable behavior will result. While it is guaranteed that the transaction will eventually end up in a cancelled state, the commit may or may not occur. Moreover, even if the call to |commit-func| appears to |error-raise-type| a :ref:`transaction_cancelled <developer-guide-error-codes>` |error-type|,  the commit may have occurred or may occur in the future. This can make it more difficult to reason about the order in which transactions occur.
-    
+
 .. |transaction-get-committed-version-blurb| replace::
     Gets the version number at which a successful commit modified the database. This must be called only after the successful (non-error) completion of a call to |commit-func| on this Transaction, or the behavior is undefined. Read-only transactions do not modify the database when committed and will have a committed version of -1. Keep in mind that a transaction which reads keys and then sets them to their current values may be optimized to a read-only transaction.
+
+.. |transaction-get-approximate-size-blurb| replace::
+    Gets the the approximate transaction size so far, which is the summation of the estimated size of mutations, read conflict ranges, and write conflict ranges.
 
 .. |transaction-get-versionstamp-blurb| replace::
     Returns a future which will contain the versionstamp which was used by any versionstamp operations in this transaction. This function must be called before a call to |commit-func| on this Transaction. The future will be ready only after the successful completion of a call to |commit-func| on this Transaction. Read-only transactions do not modify the database when committed and will result in the future completing with an error. Keep in mind that a transaction which reads keys and then sets them to their current values may be optimized to a read-only transaction.
@@ -182,7 +186,7 @@
 
 .. |transaction-watch-committed-blurb| replace::
 
-    Until the transaction that created it has been committed, a watch will not report changes made by *other* transactions. In contrast, a watch will immediately report changes made by the transaction itself. Watches cannot be created if the transaction has set |read-your-writes-disable-option|, and an attempt to do so will |error-raise-type| an :ref:`watches_disabled <developer-guide-error-codes>` |error-type|. 
+    Until the transaction that created it has been committed, a watch will not report changes made by *other* transactions. In contrast, a watch will immediately report changes made by the transaction itself. Watches cannot be created if the transaction has set |read-your-writes-disable-option|, and an attempt to do so will |error-raise-type| an :ref:`watches_disabled <developer-guide-error-codes>` |error-type|.
 
 .. |transaction-watch-error-blurb| replace::
 
@@ -191,10 +195,14 @@
 .. |transaction-watch-limit-blurb| replace::
 
     By default, each database connection can have no more than 10,000 watches that have not yet reported a change. When this number is exceeded, an attempt to create a watch will |error-raise-type| a :ref:`too_many_watches <developer-guide-error-codes>` |error-type|. This limit can be changed using |max-watches-database-option|. Because a watch outlives the transaction that creates it, any watch that is no longer needed should be cancelled by calling |future-cancel| on its returned future.
-    
+
+.. |transaction-clear-range-blurb| replace::
+
+    Range clears are efficient with FoundationDB -- clearing large amounts of data will be fast. However, this will not immediately free up disk - data for the deleted range is cleaned up in the background. For purposes of computing the transaction size, only the begin and end keys of a clear range are counted. The size of the data stored in the range does not count against the transaction size limit.
+
 .. |conflict-range-note| replace::
 
-    Most applications will use the serializable isolation that transactions provide by default and will not need to manipulate conflict ranges.
+    Most applications will use the strictly serializable isolation that transactions provide by default and will not need to manipulate conflict ranges.
 
 .. |conflict-range-blurb| replace::
 
@@ -232,9 +240,15 @@
 .. |option-trace-roll-size-blurb| replace::
     Sets the maximum size in bytes of a single trace output file for this FoundationDB client.
 
+.. |option-trace-format-blurb| replace::
+    Select the format of the trace files for this FoundationDB client. xml (the default) and json are supported.
+
+.. |option-trace-clock-source-blurb| replace::
+    Select clock source for trace files. now (the default) or realtime are supported.
+
 .. |network-options-warning| replace::
 
-    It is an error to set these options after the first call to |open-func| or |init-func| anywhere in your application.
+    It is an error to set these options after the first call to |open-func| anywhere in your application.
 
 .. |tls-options-burb| replace::
 
@@ -242,10 +256,10 @@
 
 .. |option-tls-plugin-blurb| replace::
 
-    Sets the :ref:`TLS plugin <configuring-tls-plugin>` to load. This option, if used, must be set before any other TLS options.
+    Sets the :ref:`TLS plugin <configuring-tls>` to load. This option, if used, must be set before any other TLS options.
 
 .. |option-tls-cert-path-blurb| replace::
-   
+
     Sets the path for the file from which the :ref:`certificate chain <tls-certificate-file>` will be loaded.
 
 .. |option-tls-key-path-blurb| replace::
@@ -269,7 +283,7 @@
     Disables the :ref:`multi-version client API <multi-version-client-api>` and instead uses the local client directly. Must be set before setting up the network.
 
 .. |option-callbacks-on-external-threads| replace::
-  
+
     If set, callbacks from :ref:`external client libraries <multi-version-client-api>` can be called from threads created by the FoundationDB client library. Otherwise, callbacks will be called from either the thread used to add the callback or the network thread. Setting this option can improve performance when connected using an external client, but may not be safe to use in all environments. Must be set before setting up the network. WARNING: This feature is considered experimental at this time.
 
 .. |option-external-client-library| replace::
@@ -281,7 +295,7 @@
     Searches the specified path for dynamic libraries and adds them to the list of client libraries for use by the :ref:`multi-version client API <multi-version-client-api>`. Must be set before setting up the network.
 
 .. |database-options-blurb| replace::
-    
+
     Database options alter the behavior of FoundationDB databases.
 
 .. |option-location-cache-size-blurb| replace::
@@ -299,32 +313,64 @@
 
     Specify the datacenter ID to be preferentially used for database operations. ID must be a string of up to 16 hexadecimal digits that was used to configure :ref:`fdbserver processes <foundationdb-conf-fdbserver>`. Load balancing uses this option for location-awareness, attempting to send database operations first to servers on a specified machine, then a specified datacenter, then returning to its default algorithm.
 
+.. |option-db-tr-retry-limit-blurb| replace::
+
+    Set the default maximum number of retries for each transaction after which additional calls to |on-error-func| will throw the most recently seen error code. This is equivalent to calling |retry-limit-transaction-option| on each transaction created by this database.
+
+.. |option-db-tr-size-limit-blurb| replace::
+
+    Set the default maximum transaction size in bytes. This is equivalent to calling |transaction-size-limit-database-option| on each transaction created by this database.
+
+.. |option-db-tr-timeout-blurb| replace::
+
+    Set the default timeout duration in milliseconds after which all transactions created by this database will automatically be cancelled. This is equivalent to calling |timeout-transaction-option| on each transaction created by this database. This option can only be called if the API version is at least 610.
+
+.. |option-db-tr-max-retry-delay-blurb| replace::
+
+    Set the default maximum backoff delay incurred by each transaction in the call to |on-error-func| if the error is retryable. This is equivalent to calling |max-retry-delay-transaction-option| on each transaction created by this database.
+
+.. |option-db-causal-read-risky-blurb| replace::
+
+    Transactions do not require the strict causal consistency guarantee that FoundationDB provides by default.  The read version will be committed, and usually will be the latest committed, but might not be the latest committed in the event of a simultaneous fault and misbehaving clock. Enabling this option is equivalent to calling |causal-read-risky-transaction-option| on each transaction created by this database.
+
+.. |option-db-snapshot-ryw-enable-blurb| replace::
+
+    If this option has been set an equal or more times with this database than the disable option, snapshot reads *will* see the effects of prior writes in the same transaction. Enabling this option is equivalent to calling |snapshot-ryw-enable-transaction-option| on each transaction created by this database.
+
+.. |option-db-snapshot-ryw-disable-blurb| replace::
+
+    If this option has been set more times with this database than the disable option, snapshot reads will *not* see the effects of prior writes in the same transaction. Disabling this option is equivalent to calling |snapshot-ryw-disable-transaction-option| on each transaction created by this database.
+
+.. |option-db-tr-transaction-logging-max-field-length-blurb| replace::
+
+    Sets the maximum escaped length of key and value fields to be logged to the trace file via the LOG_TRANSACTION option. This is equivalent to calling |transaction-logging-max-field-length-transaction-option| on each transaction created by this database.
+
 .. |transaction-options-blurb| replace::
 
     Transaction options alter the behavior of FoundationDB transactions. FoundationDB defaults to extremely safe transaction behavior, and we have worked hard to make the performance excellent with the default setting, so you should not often need to use transaction options.
 
 .. |option-snapshot-ryw-enable-blurb| replace::
 
-    If this option is set an equal or more times in this transaction than the disable option, snapshot reads *will* see the effects of prior writes in the same transaction.
+    If this option is set an equal or more times in this transaction than the disable option, snapshot reads *will* see the effects of prior writes in the same transaction. This option can be enabled one or more times at the database-level by calling |snapshot-ryw-enable-database-option|.
 
 .. |option-snapshot-ryw-disable-blurb| replace::
 
-    If this option is set more times in this transction than the enable option, snapshot reads will *not* see the effects of prior writes in the same transaction.
+    If this option is set more times in this transaction than the enable option, snapshot reads will *not* see the effects of prior writes in the same transaction. Note that prior to API version 300, this was the default behavior. This option can be disabled one or more times at the database level by calling |snapshot-ryw-disable-database-option|.
 
 .. |option-priority-batch-blurb| replace::
-    This transaction should be treated as low priority (other transactions should be processed first).  Useful for doing potentially saturating batch work without interfering with the latency of other operations.
+    This transaction should be treated as low priority (other transactions will be processed first). Batch priority transactions will also be throttled at load levels smaller than for other types of transactions and may be fully cut off in the event of machine failures. Useful for doing potentially saturating batch work without interfering with the latency of other operations.
 
 .. |option-priority-system-immediate-blurb| replace::
-    
+
     This transaction should be treated as extremely high priority, taking priority over other transactions and bypassing controls on transaction queuing.
-        
+
 .. |option-priority-system-immediate-warning| replace::
 
     This is intended for the use of internal database functions and low-level tools; use by applications may result in severe database performance or availability problems.
 
 .. |option-causal-read-risky-blurb| replace::
 
-    This transaction does not require the strict causal consistency guarantee that FoundationDB provides by default.  The read version of the transaction will be a committed version, and usually will be the latest committed, but it might be an older version in the event of a fault or network partition.
+    This transaction does not require the strict causal consistency guarantee that FoundationDB provides by default.  The read version will be committed, and usually will be the latest committed, but might not be the latest committed in the event of a simultaneous fault and misbehaving clock. One can set this for all transactions by calling |causal-read-risky-database-option|.
 
 .. |option-causal-write-risky-blurb| replace::
 
@@ -343,7 +389,7 @@
     Disables read-ahead caching for range reads. Under normal operation, a transaction will read extra rows from the database into cache if range reads are used to page through a series of data one row at a time (i.e. if a range read with a one row limit is followed by another one row range read starting immediately after the result of the first).
 
 .. |option-access-system-keys-blurb| replace::
-    
+
     Allows this transaction to read and modify system keys (those that start with the byte ``0xFF``).
 
 .. |option-access-system-keys-warning| replace::
@@ -351,40 +397,40 @@
     Writing into system keys will likely break your database. Further, even for readers, the format of data in the system keys may change from version to version in FoundationDB.
 
 .. |option-read-system-keys-blurb| replace::
-    
+
     Allows this transaction to read system keys (those that start with the byte ``0xFF``).
 
 .. |option-read-system-keys-warning| replace::
 
     The format of data in the system keys may change from version to version in FoundationDB.
 
-.. |option-durability-dev-null-is-web-scale-blurb| replace::
-
-    This option has no effect yet, but may make users migrating from MongoDB more comfortable.
-    
 ..  |option-set-retry-limit-blurb1| replace::
-    
+
     Set a maximum number of retries after which additional calls to |on-error-func| will throw the most recently seen error code. (By default, a transaction permits an unlimited number of retries.) Valid parameter values are [-1, INT_MAX]. If set to -1, the transaction returns to the default of unlimited retries.
 
 ..  |option-set-retry-limit-blurb2| replace::
 
-    Like all transaction options, the retry limit must be reset after a call to |on-error-func|. This behavior allows the user to make the retry limit dynamic.
+    Prior to API version 610, Like all other transaction options, the retry limit must be reset after a call to |on-error-func|. If the API version is 610 or newer, then the retry limit is not reset. Note that at all API versions, it is safe and legal to call this option after each call to |on-error-func|, so most code written assuming the older behavior can be upgraded without requiring any modification. This also means there is no need to introduce logic to conditionally set this option within retry loops. One can also set the default retry limit for all transactions by calling |retry-limit-database-option|.
 
 ..  |option-set-max-retry-delay-blurb| replace::
 
-    Set the maximum backoff delay incurred in the call to |on-error-func| if the error is retryable.
+    Set the maximum backoff delay incurred in the call to |on-error-func| if the error is retryable. Prior to API version 610, like all other transaction options, the maximum retry delay must be reset after a call to |on-error-func|. If the API version is 610 or newer, then the maximum retry delay is not reset. Note that at all API versions, it is safe and legal to call this option after each call to |on-error-func|, so most cade written assuming the older behavior can be upgraded without requiring any modification. This also means there is no need to introduce logic to conditionally set this option within retry loops. One can set the default retry limit for all transactions by calling |max-retry-delay-database-option|.
+
+..  |option-set-size-limit-blurb| replace::
+
+    Set the transaction size limit in bytes. The size is calculated by combining the sizes of all keys and values written or mutated, all key ranges cleared, and all read and write conflict ranges. (In other words, it includes the total size of all data included in the request to the cluster to commit the transaction.) Large transactions can cause performance problems on FoundationDB clusters, so setting this limit to a smaller value than the default can help prevent the client from accidentally degrading the cluster's performance. This value must be at least 32 and cannot be set to higher than 10,000,000, the default transaction size limit.
 
 ..  |option-set-timeout-blurb1| replace::
 
     Set a timeout duration in milliseconds after which the transaction automatically to be cancelled. The time is measured from transaction creation (or the most call to |reset-func-name|, if any). Valid parameter values are [0, INT_MAX]. If set to 0, all timeouts will be disabled. Once a transaction has timed out, all pending or future uses of the transaction will |error-raise-type| a :ref:`transaction_timed_out <developer-guide-error-codes>` |error-type|. The transaction can be used again after it is |reset-func-name|.
 
 .. |option-set-timeout-blurb2| replace::
-    
+
     Timeouts employ transaction cancellation, so you should note the issues raised by |cancel-func| when using timeouts.
 
 .. |option-set-timeout-blurb3| replace::
 
-    Like all transaction options, a timeout must be reset after a call to |on-error-func|. This behavior allows the user to make the timeout dynamic. Note that resetting this option resets only the timeout *duration*, not the starting point from which the time is measured.
+    Prior to API version 610, like all other transaction options, a timeout must be reset after a call to |on-error-func|. Note that resetting this option resets only the timeout *duration*, not the starting point from which the time is measured. If the API version is 610 or newer, then the timeout is not reset. This allows the user to specify a timeout for specific transactions that is longer than the timeout specified by |timeout-database-option|. Note that at all API versions, it is safe and legal to call this option after each call to |on-error-func|, so most code written assuming the older behavior can be upgraded without requiring any modification. This also means that there is no need to introduce logic to conditionally set this option within retry loops. One can set the default timeout for all transactions by calling |timeout-database-option|.
 
 .. |option-next-write-no-write-conflict-range-blurb| replace::
 
@@ -393,16 +439,31 @@
 .. |option-next-write-no-write-conflict-range-note| replace::
 
     Care needs to be taken when using this option on a transaction that is shared between multiple threads. When setting this option, write conflict ranges will be disabled on the next write operation, regardless of what thread it is on.
-    
+
+..  |option-set-transaction-logging-max-field-length-blurb| replace::
+
+    Sets the maximum escaped length of key and value fields to be logged to the trace file via the LOG_TRANSACTION option, after which the field will be truncated. A negative value disables truncation. One can set the default max field length for all transactions by calling |transaction-logging-max-field-length-database-option|.
+
+..  |option-set-debug-transaction-identifier| replace::
+
+    Sets a client provided string identifier for the transaction that will be used in scenarios like tracing or profiling. Client trace logging or transaction profiling must be separately enabled.
+
+..  |option-set-log-transaction| replace::
+
+    Enables tracing for this transaction and logs results to the client trace logs. The DEBUG_TRANSACTION_IDENTIFIER option must be set before using this option, and client trace logging must be enabled to get log output.
+
 .. |future-blurb1| replace::
     Many FoundationDB API functions return "future" objects. A brief overview of futures is included in the :doc:`class scheduling tutorial <class-scheduling>`. Most future objects behave just like a normal object, but block when you use them for the first time if the asynchronous function which returned the future has not yet completed its action. A future object is considered ready when either a value is available, or when an error has occurred.
 
 .. |future-cancel-blurb| replace::
 
     Cancels |future-type-string| and its associated asynchronous operation. If called before the future is ready, attempts to access its value will |error-raise-type| an :ref:`operation_cancelled <developer-guide-error-codes>` |error-type|. Cancelling a future which is already ready has no effect. Note that even if a future is not ready, its associated asynchronous operation may have succesfully completed and be unable to be cancelled.
-    
-.. |fdb-open-blurb| replace::
-    Initializes the FoundationDB API, connects to the cluster specified by the :ref:`cluster file <foundationdb-cluster-file>`, and opens the database with the specified name. This function is often called without any parameters, using only the defaults. If no cluster file is passed, FoundationDB automatically :ref:`determines a cluster file <specifying-a-cluster-file>` with which to connect to a cluster.
+
+.. |fdb-open-blurb1| replace::
+    Connects to the cluster specified by the :ref:`cluster file <foundationdb-cluster-file>`. This function is often called without any parameters, using only the defaults. If no cluster file is passed, FoundationDB automatically :ref:`determines a cluster file <specifying-a-cluster-file>` with which to connect to a cluster.
+
+.. |fdb-open-blurb2| replace::
+	A single client can use this function multiple times to connect to different clusters simultaneously, with each invocation requiring its own cluster file. To connect to multiple clusters running at different, incompatible versions, the :ref:`multi-version client API <multi-version-client-api>` must be used.
 
 .. |fdb-transactional-unknown-result-note| replace::
     In some failure scenarios, it is possible that your transaction will be executed twice. See :ref:`developer-guide-unknown-results` for more information.
@@ -411,12 +472,12 @@
     The |database-class| that this transaction is interacting with.
 
 .. |database-get-key-caching-blurb| replace::
-    The key is cached, providing a potential performance benefit. However, the 
+    The key is cached, providing a potential performance benefit. However, the
     value of the key is also retrieved, using network bandwidth.
 
 .. |transaction-get-key-caching-blurb| replace::
     By default, the key is cached for the duration of the transaction, providing
-    a potential performance benefit. However, the value of the key is also retrieved, 
+    a potential performance benefit. However, the value of the key is also retrieved,
     using network bandwidth. Invoking |read-your-writes-disable-option| will avoid
     both the caching and the increased network bandwidth.
 
@@ -428,7 +489,7 @@
 
 .. |subspace-blurb1| replace::
     Subspaces provide a convenient way to use the |tuple-layer| to define namespaces for different categories of data. The namespace is specified by a prefix tuple which is prepended to all tuples packed by the subspace. When unpacking a key with the subspace, the prefix tuple will be removed from the result.
-        
+
 .. |subspace-blurb2| replace::
     As a best practice, API clients should use at least one subspace for application data.
 
@@ -515,7 +576,7 @@
 
 .. |locality-get-boundary-keys-db-or-tr| replace::
     The first parameter to this function may be either a |database-class| or a |transaction-class|. If it is passed a |transaction-class|, the transaction will not be committed, reset, or modified in any way, nor will its transaction options (such as retry limit) be applied within the function. However, if the database is unavailable prior to the function call, any timeout set on the transaction will still trigger.
-    
+
 .. |locality-get-boundary-keys-blurb| replace::
 
     Returns a |lazy-iterator-object| of keys ``k`` such that ``begin <= k < end`` and ``k`` is located at the start of a contiguous range stored on a single server.
@@ -527,4 +588,3 @@
 .. |locality-get-addresses-for-key-blurb| replace::
 
     Returns a list of public network addresses as strings, one for each of the storage servers responsible for storing ``key`` and its associated value.
-    

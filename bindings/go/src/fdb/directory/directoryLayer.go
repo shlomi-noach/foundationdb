@@ -27,6 +27,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/subspace"
 	"github.com/apple/foundationdb/bindings/go/src/fdb/tuple"
@@ -78,9 +79,8 @@ func (dl directoryLayer) createOrOpen(rtr fdb.ReadTransaction, tr *fdb.Transacti
 	if prefix != nil && !dl.allowManualPrefixes {
 		if len(dl.path) == 0 {
 			return nil, errors.New("cannot specify a prefix unless manual prefixes are enabled")
-		} else {
-			return nil, errors.New("cannot specify a prefix in a partition")
 		}
+		return nil, errors.New("cannot specify a prefix in a partition")
 	}
 
 	if len(path) == 0 {
@@ -99,18 +99,20 @@ func (dl directoryLayer) createOrOpen(rtr fdb.ReadTransaction, tr *fdb.Transacti
 		}
 
 		if !allowOpen {
-			return nil, errors.New("the directory already exists")
+			return nil, ErrDirAlreadyExists
 		}
 
-		if layer != nil && bytes.Compare(existingNode._layer.MustGet(), layer) != 0 {
-			return nil, errors.New("the directory was created with an incompatible layer")
+		if layer != nil {
+			if l, e := existingNode._layer.Get(); e != nil || bytes.Compare(l, layer) != 0 {
+				return nil, errors.New("the directory was created with an incompatible layer")
+			}
 		}
 
 		return existingNode.getContents(dl, nil)
 	}
 
 	if !allowCreate {
-		return nil, errors.New("the directory does not exist")
+		return nil, ErrDirNotExists
 	}
 
 	if e := dl.checkVersion(rtr, tr); e != nil {
@@ -159,7 +161,7 @@ func (dl directoryLayer) createOrOpen(rtr fdb.ReadTransaction, tr *fdb.Transacti
 	}
 
 	if parentNode == nil {
-		return nil, errors.New("the parent directory does not exist")
+		return nil, ErrParentDirDoesNotExist
 	}
 
 	node := dl.nodeWithPrefix(prefix)
@@ -252,7 +254,7 @@ func (dl directoryLayer) List(rt fdb.ReadTransactor, path []string) ([]string, e
 
 		node := dl.find(rtr, path).prefetchMetadata(rtr)
 		if !node.exists() {
-			return nil, errors.New("the directory does not exist")
+			return nil, ErrDirNotExists
 		}
 
 		if node.isInPartition(nil, true) {
@@ -325,7 +327,11 @@ func (dl directoryLayer) Move(t fdb.Transactor, oldPath []string, newPath []stri
 
 		dl.removeFromParent(tr, oldPath)
 
-		return dl.contentsOfNode(oldNode.subspace, newPath, oldNode._layer.MustGet())
+		l, e := oldNode._layer.Get()
+		if e != nil {
+			return nil, e
+		}
+		return dl.contentsOfNode(oldNode.subspace, newPath, l)
 	})
 	if e != nil {
 		return nil, e
@@ -415,7 +421,10 @@ func (dl directoryLayer) subdirNames(rtr fdb.ReadTransaction, node subspace.Subs
 	var ret []string
 
 	for ri.Advance() {
-		kv := ri.MustGet()
+		kv, e := ri.Get()
+		if e != nil {
+			return nil, e
+		}
 
 		p, e := sd.Unpack(kv.Key)
 		if e != nil {
@@ -453,7 +462,10 @@ func (dl directoryLayer) nodeContainingKey(rtr fdb.ReadTransaction, key []byte) 
 	bk, _ := dl.nodeSS.FDBRangeKeys()
 	kr := fdb.KeyRange{bk, fdb.Key(append(dl.nodeSS.Pack(tuple.Tuple{key}), 0x00))}
 
-	kvs := rtr.GetRange(kr, fdb.RangeOptions{Reverse: true, Limit: 1}).GetSliceOrPanic()
+	kvs, e := rtr.GetRange(kr, fdb.RangeOptions{Reverse: true, Limit: 1}).GetSliceWithError()
+	if e != nil {
+		return nil, e
+	}
 	if len(kvs) == 1 {
 		pp, e := dl.nodeSS.Unpack(kvs[0].Key)
 		if e != nil {
@@ -495,7 +507,10 @@ func (dl directoryLayer) isPrefixFree(rtr fdb.ReadTransaction, prefix []byte) (b
 }
 
 func (dl directoryLayer) checkVersion(rtr fdb.ReadTransaction, tr *fdb.Transaction) error {
-	version := rtr.Get(dl.rootNode.Sub([]byte("version"))).MustGet()
+	version, err := rtr.Get(dl.rootNode.Sub([]byte("version"))).Get()
+	if err != nil {
+		return err
+	}
 
 	if version == nil {
 		if tr != nil {
@@ -562,9 +577,8 @@ func (dl directoryLayer) contentsOfNode(node subspace.Subspace, path []string, l
 		ndl := NewDirectoryLayer(subspace.FromBytes(nssb), ss, false).(directoryLayer)
 		ndl.path = newPath
 		return directoryPartition{ndl, dl}, nil
-	} else {
-		return directorySubspace{ss, dl, newPath, layer}, nil
 	}
+	return directorySubspace{ss, dl, newPath, layer}, nil
 }
 
 func (dl directoryLayer) nodeWithPrefix(prefix []byte) subspace.Subspace {

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # bindingtester.py
 #
@@ -38,15 +38,13 @@ from functools import reduce
 
 sys.path[:0] = [os.path.join(os.path.dirname(__file__), '..')]
 
-import bindingtester
-
 from bindingtester import FDB_API_VERSION
 from bindingtester import Result
 
 from bindingtester import util
 from bindingtester.tests import Test, InstructionSet
 
-from known_testers import Tester
+from bindingtester.known_testers import Tester
 
 import fdb
 import fdb.tuple
@@ -68,6 +66,10 @@ class ResultSet(object):
 
         self.tester_results[name] = results
 
+    @staticmethod
+    def _min_tuple(t1, t2):
+        return t1 if fdb.tuple.compare(t1, t2) < 0 else t2
+
     def check_for_errors(self):
         if len(self.tester_results) == 1:
             return (0, False)
@@ -75,33 +77,47 @@ class ResultSet(object):
         util.get_logger().info('Comparing results from \'%s\'...' % repr(util.subspace_to_tuple(self.specification.subspace)))
 
         num_errors = 0
+        has_filtered_error = False
+
+        # Tracks the current result being evaluated for each tester
         indices = [0 for i in range(len(self.tester_results))]
 
         name_length = max([len(name) for name in self.tester_results.keys()])
 
-        has_filtered_error = False
-
         while True:
+            # Gets the next result for each tester
             results = {i: r[indices[i]] for i, r in enumerate(self.tester_results.values()) if len(r) > indices[i]}
             if len(results) == 0:
                 break
 
+            # Attempt to 'align' the results. If two results have matching sequence numbers, then they should be compared.
+            # Only those testers which have a result matching the minimum current sequence number will be included. All
+            # others are considered to have not produced a result and will be evaluated in a future iteration.
             sequence_nums = [r.sequence_num(self.specification) for r in results.values()]
             if any([s is not None for s in sequence_nums]):
                 results = {i: r for i, r in results.items() if r.sequence_num(self.specification) == min(sequence_nums)}
-            else:
-                results = {i: r for i, r in results.items() if r.matches(min(results.values()), self.specification)}
 
+            # If these results aren't using sequence numbers, then we match two results based on whether they share the same key
+            else:
+                min_key = reduce(ResultSet._min_tuple, [r.key(self.specification) for r in results.values()])
+                results = {i: r for i, r in results.items() if Result.tuples_match(r.key(self.specification), min_key)}
+
+            # Increment the indices for those testers which produced a result in this iteration
             for i in results.keys():
                 indices[i] += 1
 
+            # Fill in 'None' values for testers that didn't produce a result and generate an output string describing the results
             all_results = {i: results[i] if i in results else None for i in range(len(self.tester_results))}
-            result_str = '\n'.join(['  %-*s - %s' % (name_length, self.tester_results.keys()[i], r) for i, r in all_results.items()])
+            result_keys = list(self.tester_results.keys())
+            result_str = '\n'.join(['  %-*s - %s' % (name_length, result_keys[i], r) for i, r in all_results.items()])
 
-            result_list = results.values()
+            result_list = list(results.values())
+
+            # If any of our results matches the global error filter, we ignore the result
             if any(r.matches_global_error_filter(self.specification) for r in result_list):
                 has_filtered_error = True
 
+            # The result is considered correct if every tester produced a value and all the values meet the matching criteria
             if len(results) < len(all_results) or not all(result_list[0].matches(r, self.specification) for r in result_list):
                 util.get_logger().error('\nIncorrect result: \n%s' % result_str)
                 num_errors += 1
@@ -141,7 +157,7 @@ def choose_api_version(selected_api_version, tester_min_version, tester_max_vers
             api_version = min_version
         elif random.random() < 0.9:
             api_version = random.choice([v for v in [13, 14, 16, 21, 22, 23, 100, 200, 300, 400, 410, 420, 430,
-                                                     440, 450, 460, 500, 510, 520] if v >= min_version and v <= max_version])
+                                                     440, 450, 460, 500, 510, 520, 600, 610, 620, 630, 700] if v >= min_version and v <= max_version])
         else:
             api_version = random.randint(min_version, max_version)
 
@@ -183,7 +199,9 @@ class TestRunner(object):
             raise Exception('Not all testers support concurrency')
 
         # Test types should be intersection of all tester supported types
-        self.args.types = reduce(lambda t1, t2: filter(t1.__contains__, t2), map(lambda tester: tester.types, self.testers))
+        self.args.types = list(reduce(lambda t1, t2: filter(t1.__contains__, t2), map(lambda tester: tester.types, self.testers)))
+
+        self.args.no_directory_snapshot_ops = self.args.no_directory_snapshot_ops or any([not tester.directory_snapshot_ops_enabled for tester in self.testers])
 
     def print_test(self):
         test_instructions = self._generate_test()
@@ -245,19 +263,19 @@ class TestRunner(object):
 
         if self.args.concurrency == 1:
             self.test.setup(self.args)
-            test_instructions = {fdb.Subspace((self.args.instruction_prefix,)): self.test.generate(self.args, 0)}
+            test_instructions = {fdb.Subspace((bytes(self.args.instruction_prefix, 'utf-8'),)): self.test.generate(self.args, 0)}
         else:
             test_instructions = {}
             main_thread = InstructionSet()
             for i in range(self.args.concurrency):
                 # thread_spec = fdb.Subspace(('thread_spec', i))
-                thread_spec = 'thread_spec%d' % i
+                thread_spec = b'thread_spec%d' % i
                 main_thread.push_args(thread_spec)
                 main_thread.append('START_THREAD')
                 self.test.setup(self.args)
                 test_instructions[fdb.Subspace((thread_spec,))] = self.test.generate(self.args, i)
 
-            test_instructions[fdb.Subspace((self.args.instruction_prefix,))] = main_thread
+            test_instructions[fdb.Subspace((bytes(self.args.instruction_prefix, 'utf-8'),))] = main_thread
 
         return test_instructions
 
@@ -424,6 +442,8 @@ def parse_args(argv):
     # SOMEDAY: this applies only to the scripted test. Should we invoke test files specifically (as in circus),
     # or invoke them here and allow tests to add arguments?
     parser.add_argument('--no-threads', action='store_true', help='Disables the START_THREAD instruction in the scripted test.')
+    
+    parser.add_argument('--no-directory-snapshot-ops', action='store_true', help='Disables snapshot operations for directory instructions.')
 
     return parser.parse_args(argv)
 

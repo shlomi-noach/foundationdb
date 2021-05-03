@@ -22,32 +22,48 @@
 #define FDBCLIENT_COORDINATIONINTERFACE_H
 #pragma once
 
-#include "FDBTypes.h"
+#include "fdbclient/FDBTypes.h"
 #include "fdbrpc/fdbrpc.h"
 #include "fdbrpc/Locality.h"
+#include "fdbclient/CommitProxyInterface.h"
+#include "fdbclient/ClusterInterface.h"
 
 const int MAX_CLUSTER_FILE_BYTES = 60000;
 
+constexpr UID WLTOKEN_CLIENTLEADERREG_GETLEADER(-1, 2);
+constexpr UID WLTOKEN_CLIENTLEADERREG_OPENDATABASE(-1, 3);
+
+constexpr UID WLTOKEN_PROTOCOL_INFO(-1, 10);
+
+// The coordinator interface as exposed to clients
 struct ClientLeaderRegInterface {
-	RequestStream< struct GetLeaderRequest > getLeader;
+	RequestStream<struct GetLeaderRequest> getLeader;
+	RequestStream<struct OpenDatabaseCoordRequest> openDatabase;
 
 	ClientLeaderRegInterface() {}
-	ClientLeaderRegInterface( NetworkAddress remote );
-	ClientLeaderRegInterface( INetwork* local );
+	ClientLeaderRegInterface(NetworkAddress remote);
+	ClientLeaderRegInterface(INetwork* local);
+
+	bool operator==(const ClientLeaderRegInterface& rhs) const {
+		return getLeader == rhs.getLeader && openDatabase == rhs.openDatabase;
+	}
 };
 
 class ClusterConnectionString {
 public:
 	ClusterConnectionString() {}
-	ClusterConnectionString( std::string const& connectionString );
-	ClusterConnectionString( vector<NetworkAddress>, Key );
+	ClusterConnectionString(std::string const& connectionString);
+	ClusterConnectionString(vector<NetworkAddress>, Key);
 	vector<NetworkAddress> const& coordinators() const { return coord; }
 	Key clusterKey() const { return key; }
-	Key clusterKeyName() const { return keyDesc; }  // Returns the "name" or "description" part of the clusterKey (the part before the ':')
+	Key clusterKeyName() const {
+		return keyDesc;
+	} // Returns the "name" or "description" part of the clusterKey (the part before the ':')
 	std::string toString() const;
 	static std::string getErrorString(std::string const& source, Error const& e);
+
 private:
-	void parseKey( std::string const& key );
+	void parseKey(std::string const& key);
 
 	vector<NetworkAddress> coord;
 	Key key, keyDesc;
@@ -66,25 +82,28 @@ public:
 	//  - The description contains only allowed characters (a-z, A-Z, 0-9, _)
 	//  - The ID contains only allowed characters (a-z, A-Z, 0-9)
 	//  - At least one address is specified
-	//  - All addresses either have TLS enabled or disabled (no mixing)
 	//  - There is no address present more than once
-	explicit ClusterConnectionFile( std::string const& path );
+	explicit ClusterConnectionFile(std::string const& path);
 	explicit ClusterConnectionFile(ClusterConnectionString const& cs) : cs(cs), setConn(false) {}
 	explicit ClusterConnectionFile(std::string const& filename, ClusterConnectionString const& contents);
 
 	// returns <resolved name, was default file>
-	static std::pair<std::string, bool> lookupClusterFileName( std::string const& filename );
+	static std::pair<std::string, bool> lookupClusterFileName(std::string const& filename);
 	// get a human readable error message describing the error returned from the constructor
-	static std::string getErrorString( std::pair<std::string, bool> const& resolvedFile, Error const& e );
+	static std::string getErrorString(std::pair<std::string, bool> const& resolvedFile, Error const& e);
 
-	ClusterConnectionString const& getConnectionString();
+	ClusterConnectionString const& getConnectionString() const;
 	bool writeFile();
-	void setConnectionString( ClusterConnectionString const& );
-	std::string const& getFilename() const { ASSERT( filename.size() ); return filename; }
-	bool canGetFilename() { return filename.size() != 0; }
+	void setConnectionString(ClusterConnectionString const&);
+	std::string const& getFilename() const {
+		ASSERT(filename.size());
+		return filename;
+	}
+	bool canGetFilename() const { return filename.size() != 0; }
 	bool fileContentsUpToDate() const;
-	bool fileContentsUpToDate(ClusterConnectionString &fileConnectionString) const;
+	bool fileContentsUpToDate(ClusterConnectionString& fileConnectionString) const;
 	void notifyConnected();
+
 private:
 	ClusterConnectionString cs;
 	std::string filename;
@@ -92,70 +111,129 @@ private:
 };
 
 struct LeaderInfo {
+	constexpr static FileIdentifier file_identifier = 8338794;
+	// The first 7 bits of changeID represent cluster controller process class fitness, the lower the better
 	UID changeID;
-	uint64_t mask = ~(127ll << 57);
+	static const uint64_t changeIDMask = ~(uint64_t(0b1111111) << 57);
 	Value serializedInfo;
-	bool forward;  // If true, serializedInfo is a connection string instead!
+	bool forward; // If true, serializedInfo is a connection string instead!
 
 	LeaderInfo() : forward(false) {}
 	LeaderInfo(UID changeID) : changeID(changeID), forward(false) {}
 
-	bool operator < (LeaderInfo const& r) const { return changeID < r.changeID; }
-	bool operator == (LeaderInfo const& r) const { return changeID == r.changeID; }
+	bool operator<(LeaderInfo const& r) const { return changeID < r.changeID; }
+	bool operator>(LeaderInfo const& r) const { return r < *this; }
+	bool operator<=(LeaderInfo const& r) const { return !(*this > r); }
+	bool operator>=(LeaderInfo const& r) const { return !(*this < r); }
+	bool operator==(LeaderInfo const& r) const { return changeID == r.changeID; }
+	bool operator!=(LeaderInfo const& r) const { return !(*this == r); }
 
 	// The first 7 bits of ChangeID represent cluster controller process class fitness, the lower the better
 	void updateChangeID(ClusterControllerPriorityInfo info) {
-		changeID = UID( ((uint64_t)info.processClassFitness << 57) | ((uint64_t)info.isExcluded << 60) | ((uint64_t)info.dcFitness << 61) | (changeID.first() & mask), changeID.second() );
+		changeID = UID(((uint64_t)info.processClassFitness << 57) | ((uint64_t)info.isExcluded << 60) |
+		                   ((uint64_t)info.dcFitness << 61) | (changeID.first() & changeIDMask),
+		               changeID.second());
 	}
 
 	// All but the first 7 bits are used to represent process id
 	bool equalInternalId(LeaderInfo const& leaderInfo) const {
-		if ( (changeID.first() & mask) == (leaderInfo.changeID.first() & mask) && changeID.second() == leaderInfo.changeID.second() ) {
-			return true;
-		} else {
-			return false;
-		}
+		return ((changeID.first() & changeIDMask) == (leaderInfo.changeID.first() & changeIDMask)) &&
+		       changeID.second() == leaderInfo.changeID.second();
 	}
 
-	// Change leader only if 
+	// Change leader only if
 	// 1. the candidate has better process class fitness and the candidate is not the leader
-	// 2. the leader process class fitness become worse
+	// 2. the leader process class fitness becomes worse
 	bool leaderChangeRequired(LeaderInfo const& candidate) const {
-		if ( ((changeID.first() & ~mask) > (candidate.changeID.first() & ~mask) && !equalInternalId(candidate)) || ((changeID.first() & ~mask) < (candidate.changeID.first() & ~mask) && equalInternalId(candidate)) ) {
-			return true;
-		} else {
-			return false;
-		}
+		return ((changeID.first() & ~changeIDMask) > (candidate.changeID.first() & ~changeIDMask) &&
+		        !equalInternalId(candidate)) ||
+		       ((changeID.first() & ~changeIDMask) < (candidate.changeID.first() & ~changeIDMask) &&
+		        equalInternalId(candidate));
+	}
+
+	ClusterControllerPriorityInfo getPriorityInfo() const {
+		ClusterControllerPriorityInfo info;
+		info.processClassFitness = (changeID.first() >> 57) & 7;
+		info.isExcluded = (changeID.first() >> 60) & 1;
+		info.dcFitness = (changeID.first() >> 61) & 7;
+		return info;
 	}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		ar & changeID & serializedInfo & forward;
+		serializer(ar, changeID, serializedInfo, forward);
 	}
 };
 
 struct GetLeaderRequest {
+	constexpr static FileIdentifier file_identifier = 214727;
 	Key key;
 	UID knownLeader;
-	ReplyPromise< Optional<LeaderInfo> > reply;
+	ReplyPromise<Optional<LeaderInfo>> reply;
 
 	GetLeaderRequest() {}
 	explicit GetLeaderRequest(Key key, UID kl) : key(key), knownLeader(kl) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		ar & key & knownLeader & reply;
+		serializer(ar, key, knownLeader, reply);
+	}
+};
+
+struct OpenDatabaseCoordRequest {
+	constexpr static FileIdentifier file_identifier = 214728;
+	// Sent by the native API to the coordinator to open a database and track client
+	//   info changes.  Returns immediately if the current client info id is different from
+	//   knownClientInfoID; otherwise returns when it next changes (or perhaps after a long interval)
+	Key traceLogGroup;
+	Standalone<VectorRef<StringRef>> issues;
+	Standalone<VectorRef<ClientVersionRef>> supportedVersions;
+	UID knownClientInfoID;
+	Key clusterKey;
+	vector<NetworkAddress> coordinators;
+	ReplyPromise<CachedSerialization<struct ClientDBInfo>> reply;
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, issues, supportedVersions, traceLogGroup, knownClientInfoID, clusterKey, coordinators, reply);
 	}
 };
 
 class ClientCoordinators {
 public:
-	vector< ClientLeaderRegInterface > clientLeaderServers;
+	vector<ClientLeaderRegInterface> clientLeaderServers;
 	Key clusterKey;
-	Reference<ClusterConnectionFile> ccf; 
+	Reference<ClusterConnectionFile> ccf;
 
-	explicit ClientCoordinators( Reference<ClusterConnectionFile> ccf );
+	explicit ClientCoordinators(Reference<ClusterConnectionFile> ccf);
+	explicit ClientCoordinators(Key clusterKey, std::vector<NetworkAddress> coordinators);
 	ClientCoordinators() {}
+};
+
+struct ProtocolInfoReply {
+	constexpr static FileIdentifier file_identifier = 7784298;
+	ProtocolVersion version;
+	template <class Ar>
+	void serialize(Ar& ar) {
+		uint64_t version_ = 0;
+		if (Ar::isSerializing) {
+			version_ = version.versionWithFlags();
+		}
+		serializer(ar, version_);
+		if (Ar::isDeserializing) {
+			version = ProtocolVersion(version_);
+		}
+	}
+};
+
+struct ProtocolInfoRequest {
+	constexpr static FileIdentifier file_identifier = 13261233;
+	ReplyPromise<ProtocolInfoReply> reply{ PeerCompatibilityPolicy{ RequirePeer::AtLeast,
+		                                                            ProtocolVersion::withStableInterfaces() } };
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, reply);
+	}
 };
 
 #endif

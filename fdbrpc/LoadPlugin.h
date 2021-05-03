@@ -18,15 +18,21 @@
  * limitations under the License.
  */
 
+#ifndef _FLOW_LOADPLUGIN_H_
+#define _FLOW_LOADPLUGIN_H_
+
 #pragma once
 
-template <class T>
-Reference<T> loadPlugin( std::string const& plugin_name ) {
-	void* plugin = loadLibrary( plugin_name.c_str() );
-	void *(*get_plugin)(const char*) = (void*(*)(const char*))loadFunction( plugin, "get_plugin" );
+#include <string>
+#include "flow/flow.h"
 
-	if ( get_plugin )
-		return Reference<T>( (T*)get_plugin( T::get_plugin_type_name_and_version() ) );
-	else
-		return Reference<T>( NULL );
+template <class T>
+Reference<T> loadPlugin(std::string const& plugin_name) {
+	void* (*get_plugin)(const char*) = nullptr;
+	void* plugin = loadLibrary(plugin_name.c_str());
+	if (plugin)
+		get_plugin = (void* (*)(const char*))loadFunction(plugin, "get_plugin");
+	return (get_plugin) ? Reference<T>((T*)get_plugin(T::get_plugin_type_name_and_version())) : Reference<T>(nullptr);
 }
+
+#endif

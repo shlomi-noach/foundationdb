@@ -18,11 +18,11 @@
  * limitations under the License.
  */
 
-#include "flow/actorcompiler.h"
-#include "fdbclient/BackupAgent.h"
-#include "fdbclient/ManagementAPI.h"
-#include "fdbclient/NativeAPI.h"
-#include "workloads.h"
+#include "fdbclient/BackupAgent.actor.h"
+#include "fdbclient/ManagementAPI.actor.h"
+#include "fdbclient/NativeAPI.actor.h"
+#include "fdbserver/workloads/workloads.actor.h"
+#include "flow/actorcompiler.h" // This must be the last #include.
 
 struct BackupToDBAbort : TestWorkload {
 	double abortDelay;
@@ -30,25 +30,22 @@ struct BackupToDBAbort : TestWorkload {
 	Standalone<VectorRef<KeyRangeRef>> backupRanges;
 	UID lockid;
 
-	explicit BackupToDBAbort(const WorkloadContext& wcx)
-	    : TestWorkload(wcx) {
+	explicit BackupToDBAbort(const WorkloadContext& wcx) : TestWorkload(wcx) {
 		abortDelay = getOption(options, LiteralStringRef("abortDelay"), 50.0);
 
 		backupRanges.push_back_deep(backupRanges.arena(), normalKeys);
 
-		Reference<ClusterConnectionFile> extraFile(new ClusterConnectionFile(*g_simulator.extraDB));
-		Reference<Cluster> extraCluster = Cluster::createCluster(extraFile, -1);
-		extraDB = extraCluster->createDatabase(LiteralStringRef("DB")).get();
+		auto extraFile = makeReference<ClusterConnectionFile>(*g_simulator.extraDB);
+		extraDB = Database::createDatabase(extraFile, -1);
 
 		lockid = UID(0xbeeffeed, 0xdecaf00d);
 	}
 
-	virtual std::string description() override {
-		return "BackupToDBAbort";
-	}
+	std::string description() const override { return "BackupToDBAbort"; }
 
-	virtual Future<Void> setup(const Database& cx) override {
-		if (clientId != 0) return Void();
+	Future<Void> setup(const Database& cx) override {
+		if (clientId != 0)
+			return Void();
 		return _setup(this, cx);
 	}
 
@@ -56,38 +53,45 @@ struct BackupToDBAbort : TestWorkload {
 		state DatabaseBackupAgent backupAgent(cx);
 		try {
 			TraceEvent("BDBA_Submit1");
-			Void _ = wait( backupAgent.submitBackup(self->extraDB, BackupAgentBase::getDefaultTag(), self->backupRanges, false, StringRef(), StringRef(), true) );
+			wait(backupAgent.submitBackup(self->extraDB,
+			                              BackupAgentBase::getDefaultTag(),
+			                              self->backupRanges,
+			                              false,
+			                              StringRef(),
+			                              StringRef(),
+			                              true));
 			TraceEvent("BDBA_Submit2");
-		} catch( Error &e ) {
-			if( e.code() != error_code_backup_duplicate )
+		} catch (Error& e) {
+			if (e.code() != error_code_backup_duplicate)
 				throw;
 		}
 		return Void();
 	}
 
-	virtual Future<Void> start(Database const& cx) override {
-		if (clientId != 0) return Void();
+	Future<Void> start(Database const& cx) override {
+		if (clientId != 0)
+			return Void();
 		return _start(this, cx);
 	}
 
 	ACTOR static Future<Void> _start(BackupToDBAbort* self, Database cx) {
 		state DatabaseBackupAgent backupAgent(cx);
 
-		TraceEvent("BDBA_Start").detail("delay", self->abortDelay);
-		Void _ = wait(delay(self->abortDelay));
+		TraceEvent("BDBA_Start").detail("Delay", self->abortDelay);
+		wait(delay(self->abortDelay));
 		TraceEvent("BDBA_Wait");
-		int _ = wait( backupAgent.waitBackup(self->extraDB, BackupAgentBase::getDefaultTag(), false) );
+		wait(success(backupAgent.waitBackup(self->extraDB, BackupAgentBase::getDefaultTag(), false)));
 		TraceEvent("BDBA_Lock");
-		Void _ = wait(lockDatabase(cx, self->lockid));
+		wait(lockDatabase(cx, self->lockid));
 		TraceEvent("BDBA_Abort");
-		Void _ = wait(backupAgent.abortBackup(self->extraDB, BackupAgentBase::getDefaultTag()));
+		wait(backupAgent.abortBackup(self->extraDB, BackupAgentBase::getDefaultTag()));
 		TraceEvent("BDBA_Unlock");
-		Void _ = wait(backupAgent.unlockBackup(self->extraDB, BackupAgentBase::getDefaultTag()));
+		wait(backupAgent.unlockBackup(self->extraDB, BackupAgentBase::getDefaultTag()));
 		TraceEvent("BDBA_End");
 
 		// SOMEDAY: Remove after backup agents can exist quiescently
-		if (g_simulator.drAgents == ISimulator::BackupToDB) {
-			g_simulator.drAgents = ISimulator::NoBackupAgents;
+		if (g_simulator.drAgents == ISimulator::BackupAgentType::BackupToDB) {
+			g_simulator.drAgents = ISimulator::BackupAgentType::NoBackupAgents;
 		}
 
 		return Void();
@@ -97,15 +101,13 @@ struct BackupToDBAbort : TestWorkload {
 		TraceEvent("BDBA_UnlockPrimary");
 		// Too much of the tester framework expects the primary database to be unlocked, so we unlock it
 		// once all of the workloads have finished.
-		Void _ = wait(unlockDatabase(cx, self->lockid));
+		wait(unlockDatabase(cx, self->lockid));
 		return true;
 	}
 
-	virtual Future<bool> check(const Database& cx) override {
-		return _check(this, cx);
-	}
+	Future<bool> check(const Database& cx) override { return _check(this, cx); }
 
-	virtual void getMetrics(vector<PerfMetric>& m) {}
+	void getMetrics(vector<PerfMetric>& m) override {}
 };
 
 REGISTER_WORKLOAD(BackupToDBAbort);

@@ -22,21 +22,26 @@
 #define FLOW_SYSTEM_MONITOR_H
 #pragma once
 
-#include "Platform.h"
-#include "TDMetric.actor.h"
+#include "flow/Platform.h"
+#include "flow/TDMetric.actor.h"
 
 struct SystemMonitorMachineState {
 	Optional<std::string> folder;
+	Optional<Standalone<StringRef>> dcId;
 	Optional<Standalone<StringRef>> zoneId;
 	Optional<Standalone<StringRef>> machineId;
-	Optional<uint32_t> ip;
+	Optional<IPAddress> ip;
 
 	double monitorStartTime;
 
 	SystemMonitorMachineState() : monitorStartTime(0) {}
-	SystemMonitorMachineState(uint32_t ip) : ip(ip), monitorStartTime(0) {}
-	SystemMonitorMachineState(std::string folder, Optional<Standalone<StringRef>> zoneId, Optional<Standalone<StringRef>> machineId, uint32_t ip) 
-		: folder(folder), zoneId(zoneId), machineId(machineId), ip(ip), monitorStartTime(0) {}
+	explicit SystemMonitorMachineState(const IPAddress& ip) : ip(ip), monitorStartTime(0) {}
+	SystemMonitorMachineState(std::string folder,
+	                          Optional<Standalone<StringRef>> dcId,
+	                          Optional<Standalone<StringRef>> zoneId,
+	                          Optional<Standalone<StringRef>> machineId,
+	                          const IPAddress& ip)
+	  : folder(folder), dcId(dcId), zoneId(zoneId), machineId(machineId), ip(ip), monitorStartTime(0) {}
 };
 
 void initializeSystemMonitorMachineState(SystemMonitorMachineState machineState);
@@ -61,7 +66,7 @@ struct NetworkData {
 	int64_t countYieldCalls;
 	int64_t countASIOEvents;
 	int64_t countYieldCallsTrue;
-	int64_t countSlowTaskSignals;
+	int64_t countRunLoopProfilingSignals;
 	int64_t countFileLogicalWrites;
 	int64_t countFileLogicalReads;
 	int64_t countAIOSubmit;
@@ -73,65 +78,77 @@ struct NetworkData {
 	int64_t countFileCachePageReadsMerged;
 	int64_t countFileCacheFinds;
 	int64_t countFileCacheReadBytes;
+	int64_t countFilePageCacheHits;
+	int64_t countFilePageCacheMisses;
+	int64_t countFilePageCacheEvictions;
 	int64_t countConnEstablished;
 	int64_t countConnClosedWithError;
 	int64_t countConnClosedWithoutError;
+	int64_t countTLSPolicyFailures;
+	double countLaunchTime;
+	double countReactTime;
 
 	void init() {
-		auto getValue = [] (StringRef name) -> int64_t {
-			Reference<Int64Metric> r = Int64Metric::getOrCreateInstance(name);
-			int64_t v = 0;
-			if(r)
-				v = r->getValue();
-			return v;
-		};
-
-		bytesSent = getValue(LiteralStringRef("Net2.BytesSent"));
-		countPacketsReceived = getValue(LiteralStringRef("Net2.CountPacketsReceived"));
-		countPacketsGenerated = getValue(LiteralStringRef("Net2.CountPacketsGenerated"));
-		bytesReceived = getValue(LiteralStringRef("Net2.BytesReceived"));
-		countWriteProbes = getValue(LiteralStringRef("Net2.CountWriteProbes"));
-		countReadProbes = getValue(LiteralStringRef("Net2.CountReadProbes"));
-		countReads = getValue(LiteralStringRef("Net2.CountReads"));
-		countWouldBlock = getValue(LiteralStringRef("Net2.CountWouldBlock"));
-		countWrites = getValue(LiteralStringRef("Net2.CountWrites"));
-		countRunLoop = getValue(LiteralStringRef("Net2.CountRunLoop"));
-		countCantSleep = getValue(LiteralStringRef("Net2.CountCantSleep"));
-		countWontSleep = getValue(LiteralStringRef("Net2.CountWontSleep"));
-		countTimers = getValue(LiteralStringRef("Net2.CountTimers"));
-		countTasks = getValue(LiteralStringRef("Net2.CountTasks"));
-		countYields = getValue(LiteralStringRef("Net2.CountYields"));
-		countYieldBigStack = getValue(LiteralStringRef("Net2.CountYieldBigStack"));
-		countYieldCalls = getValue(LiteralStringRef("Net2.CountYieldCalls"));
-		countASIOEvents = getValue(LiteralStringRef("Net2.CountASIOEvents"));
-		countYieldCallsTrue = getValue(LiteralStringRef("Net2.CountYieldCallsTrue"));
-		countSlowTaskSignals = getValue(LiteralStringRef("Net2.CountSlowTaskSignals"));
-		countConnEstablished = getValue(LiteralStringRef("Net2.CountConnEstablished"));
-		countConnClosedWithError = getValue(LiteralStringRef("Net2.CountConnClosedWithError"));
-		countConnClosedWithoutError = getValue(LiteralStringRef("Net2.CountConnClosedWithoutError"));
-		countFileLogicalWrites = getValue(LiteralStringRef("AsyncFile.CountLogicalWrites"));
-		countFileLogicalReads = getValue(LiteralStringRef("AsyncFile.CountLogicalReads"));
-		countAIOSubmit = getValue(LiteralStringRef("AsyncFile.CountAIOSubmit"));
-		countAIOCollect = getValue(LiteralStringRef("AsyncFile.CountAIOCollect"));
-		countFileCacheWrites = getValue(LiteralStringRef("AsyncFile.CountCacheWrites"));
-		countFileCacheReads = getValue(LiteralStringRef("AsyncFile.CountCacheReads"));
-		countFileCacheWritesBlocked = getValue(LiteralStringRef("AsyncFile.CountCacheWritesBlocked"));
-		countFileCacheReadsBlocked = getValue(LiteralStringRef("AsyncFile.CountCacheReadsBlocked"));
-		countFileCachePageReadsMerged = getValue(LiteralStringRef("AsyncFile.CountCachePageReadsMerged"));
-		countFileCacheFinds = getValue(LiteralStringRef("AsyncFile.CountCacheFinds"));
-		countFileCacheReadBytes = getValue(LiteralStringRef("AsyncFile.CountCacheReadBytes"));
+		bytesSent = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.BytesSent"));
+		countPacketsReceived = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountPacketsReceived"));
+		countPacketsGenerated = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountPacketsGenerated"));
+		bytesReceived = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.BytesReceived"));
+		countWriteProbes = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountWriteProbes"));
+		countReadProbes = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountReadProbes"));
+		countReads = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountReads"));
+		countWouldBlock = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountWouldBlock"));
+		countWrites = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountWrites"));
+		countRunLoop = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountRunLoop"));
+		countCantSleep = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountCantSleep"));
+		countWontSleep = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountWontSleep"));
+		countTimers = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountTimers"));
+		countTasks = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountTasks"));
+		countYields = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountYields"));
+		countYieldBigStack = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountYieldBigStack"));
+		countYieldCalls = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountYieldCalls"));
+		countASIOEvents = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountASIOEvents"));
+		countYieldCallsTrue = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountYieldCallsTrue"));
+		countRunLoopProfilingSignals =
+		    Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountRunLoopProfilingSignals"));
+		countConnEstablished = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountConnEstablished"));
+		countConnClosedWithError = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountConnClosedWithError"));
+		countConnClosedWithoutError =
+		    Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountConnClosedWithoutError"));
+		countTLSPolicyFailures = Int64Metric::getValueOrDefault(LiteralStringRef("Net2.CountTLSPolicyFailures"));
+		countLaunchTime = DoubleMetric::getValueOrDefault(LiteralStringRef("Net2.CountLaunchTime"));
+		countReactTime = DoubleMetric::getValueOrDefault(LiteralStringRef("Net2.CountReactTime"));
+		countFileLogicalWrites = Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountLogicalWrites"));
+		countFileLogicalReads = Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountLogicalReads"));
+		countAIOSubmit = Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountAIOSubmit"));
+		countAIOCollect = Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountAIOCollect"));
+		countFileCacheWrites = Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountCacheWrites"));
+		countFileCacheReads = Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountCacheReads"));
+		countFileCacheWritesBlocked =
+		    Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountCacheWritesBlocked"));
+		countFileCacheReadsBlocked =
+		    Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountCacheReadsBlocked"));
+		countFileCachePageReadsMerged =
+		    Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountCachePageReadsMerged"));
+		countFileCacheFinds = Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountCacheFinds"));
+		countFileCacheReadBytes = Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountCacheReadBytes"));
+		countFilePageCacheHits = Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountCachePageReadsHit"));
+		countFilePageCacheMisses =
+		    Int64Metric::getValueOrDefault(LiteralStringRef("AsyncFile.CountCachePageReadsMissed"));
+		countFilePageCacheEvictions =
+		    Int64Metric::getValueOrDefault(LiteralStringRef("EvictablePageCache.CacheEvictions"));
 	}
 };
 
 struct StatisticsState {
-	SystemStatisticsState *systemState;
+	SystemStatisticsState* systemState;
 	NetworkData networkState;
 	NetworkMetrics networkMetricsState;
 
-	StatisticsState() : systemState(NULL) {}
+	StatisticsState() : systemState(nullptr) {}
 };
 
 void systemMonitor();
-SystemStatistics customSystemMonitor(std::string eventName, StatisticsState *statState, bool machineMetrics = false);
+SystemStatistics customSystemMonitor(std::string eventName, StatisticsState* statState, bool machineMetrics = false);
+SystemStatistics getSystemStatistics();
 
 #endif /* FLOW_SYSTEM_MONITOR_H */

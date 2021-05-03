@@ -24,21 +24,22 @@ package fdb_test
 
 import (
 	"fmt"
-	"github.com/apple/foundationdb/bindings/go/src/fdb"
 	"testing"
+
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
 func ExampleOpenDefault() {
 	var e error
 
-	e = fdb.APIVersion(400)
+	e = fdb.APIVersion(700)
 	if e != nil {
 		fmt.Printf("Unable to set API version: %v\n", e)
 		return
 	}
 
 	// OpenDefault opens the database described by the platform-specific default
-	// cluster file and the database name []byte("DB").
+	// cluster file
 	db, e := fdb.OpenDefault()
 	if e != nil {
 		fmt.Printf("Unable to open default database: %v\n", e)
@@ -46,16 +47,18 @@ func ExampleOpenDefault() {
 	}
 
 	_ = db
+
+	// Output:
 }
 
-func ExampleVersionstamp(t *testing.T) {
-	fdb.MustAPIVersion(400)
+func TestVersionstamp(t *testing.T) {
+	fdb.MustAPIVersion(700)
 	db := fdb.MustOpenDefault()
 
 	setVs := func(t fdb.Transactor, key fdb.Key) (fdb.FutureKey, error) {
 		fmt.Printf("setOne called with:  %T\n", t)
 		ret, e := t.Transact(func(tr fdb.Transaction) (interface{}, error) {
-			tr.SetVersionstampedValue(key, []byte("blahblahbl"))
+			tr.SetVersionstampedValue(key, []byte("blahblahbl\x00\x00\x00\x00"))
 			return tr.GetVersionstamp(), nil
 		})
 		return ret.(fdb.FutureKey), e
@@ -75,16 +78,27 @@ func ExampleVersionstamp(t *testing.T) {
 	var v []byte
 	var fvs fdb.FutureKey
 	var k fdb.Key
+	var e error
 
-	fvs, _ = setVs(db, fdb.Key("foo"))
-	v, _ = getOne(db, fdb.Key("foo"))
-	t.Log(v)
-	k, _ = fvs.Get()
+	fvs, e = setVs(db, fdb.Key("foo"))
+	if e != nil {
+		t.Errorf("setOne failed %v", e)
+	}
+	v, e = getOne(db, fdb.Key("foo"))
+	if e != nil {
+		t.Errorf("getOne failed %v", e)
+	}
+	t.Logf("getOne returned %s", v)
+	k, e = fvs.Get()
+	if e != nil {
+		t.Errorf("setOne wait failed %v", e)
+	}
 	t.Log(k)
+	t.Logf("setOne returned %s", k)
 }
 
 func ExampleTransactor() {
-	fdb.MustAPIVersion(400)
+	fdb.MustAPIVersion(700)
 	db := fdb.MustOpenDefault()
 
 	setOne := func(t fdb.Transactor, key fdb.Key, value []byte) error {
@@ -135,7 +149,7 @@ func ExampleTransactor() {
 }
 
 func ExampleReadTransactor() {
-	fdb.MustAPIVersion(400)
+	fdb.MustAPIVersion(700)
 	db := fdb.MustOpenDefault()
 
 	getOne := func(rt fdb.ReadTransactor, key fdb.Key) ([]byte, error) {
@@ -188,7 +202,7 @@ func ExampleReadTransactor() {
 }
 
 func ExamplePrefixRange() {
-	fdb.MustAPIVersion(400)
+	fdb.MustAPIVersion(700)
 	db := fdb.MustOpenDefault()
 
 	tr, e := db.CreateTransaction()
@@ -227,7 +241,7 @@ func ExamplePrefixRange() {
 }
 
 func ExampleRangeIterator() {
-	fdb.MustAPIVersion(400)
+	fdb.MustAPIVersion(700)
 	db := fdb.MustOpenDefault()
 
 	tr, e := db.CreateTransaction()
@@ -260,4 +274,28 @@ func ExampleRangeIterator() {
 	// apple is foo
 	// banana is bar
 	// cherry is baz
+}
+
+func TestKeyToString(t *testing.T) {
+	cases := []struct {
+		key    fdb.Key
+		expect string
+	}{
+		{fdb.Key([]byte{0}), "\\x00"},
+		{fdb.Key("plain-text"), "plain-text"},
+		{fdb.Key("\xbdascii☻☺"), "\\xbdascii\\xe2\\x98\\xbb\\xe2\\x98\\xba"},
+	}
+
+	for i, c := range cases {
+		if s := c.key.String(); s != c.expect {
+			t.Errorf("got '%v', want '%v' at case %v", s, c.expect, i)
+		}
+	}
+
+	// Output:
+}
+
+func ExamplePrintable() {
+	fmt.Println(fdb.Printable([]byte{0, 1, 2, 'a', 'b', 'c', '1', '2', '3', '!', '?', 255}))
+	// Output: \x00\x01\x02abc123!?\xff
 }

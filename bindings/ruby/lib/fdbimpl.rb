@@ -64,63 +64,63 @@ module FDB
     typedef :int, :fdb_error
     typedef :int, :fdb_bool
 
-    attach_function :fdb_get_error, [ :fdb_error ], :string
-
-    attach_function :fdb_network_set_option, [ :int, :pointer, :int ], :fdb_error
-    attach_function :fdb_setup_network, [ ], :fdb_error
-    attach_function :fdb_run_network, [ ], :fdb_error, :blocking => true
-    attach_function :fdb_stop_network, [ ], :fdb_error
-
-    attach_function :fdb_future_cancel, [ :pointer ], :void
-    attach_function :fdb_future_release_memory, [ :pointer ], :void
-    attach_function :fdb_future_destroy, [ :pointer ], :void
-    attach_function :fdb_future_block_until_ready, [ :pointer ], :fdb_error, :blocking => true
-    attach_function :fdb_future_is_ready, [ :pointer ], :fdb_bool
-
-    callback :fdb_future_callback, [ :pointer, :pointer ], :void
-    attach_function :fdb_future_set_callback, [ :pointer, :fdb_future_callback, :pointer ], :fdb_error
-
-    attach_function :fdb_future_get_error, [ :pointer ], :fdb_error
-    attach_function :fdb_future_get_version, [ :pointer, :pointer ], :fdb_error
-    attach_function :fdb_future_get_key, [ :pointer, :pointer, :pointer ], :fdb_error
-    attach_function :fdb_future_get_cluster, [ :pointer, :pointer ], :fdb_error
-    attach_function :fdb_future_get_database, [ :pointer, :pointer ], :fdb_error
-    attach_function :fdb_future_get_value, [ :pointer, :pointer, :pointer, :pointer ], :fdb_error
-    attach_function :fdb_future_get_keyvalue_array, [ :pointer, :pointer, :pointer, :pointer ], :fdb_error
-    attach_function :fdb_future_get_string_array, [ :pointer, :pointer, :pointer ], :fdb_error
-
-    attach_function :fdb_create_cluster, [ :string ], :pointer
-    attach_function :fdb_cluster_destroy, [ :pointer ], :void
-    attach_function :fdb_cluster_set_option, [ :pointer, :int, :pointer, :int ], :fdb_error
-
-    attach_function :fdb_cluster_create_database, [ :pointer, :pointer, :int ], :pointer
-    attach_function :fdb_database_destroy, [ :pointer ], :void
-    attach_function :fdb_database_set_option, [ :pointer, :int, :pointer, :int ], :fdb_error
-
-    attach_function :fdb_database_create_transaction, [ :pointer, :pointer ], :fdb_error
-    attach_function :fdb_transaction_destroy, [ :pointer ], :void
-    attach_function :fdb_transaction_cancel, [ :pointer ], :void
-    attach_function :fdb_transaction_atomic_op, [ :pointer, :pointer, :int, :pointer, :int, :int ], :void
-    attach_function :fdb_transaction_add_conflict_range, [ :pointer, :pointer, :int, :pointer, :int, :int ], :int
-    attach_function :fdb_transaction_get_addresses_for_key, [ :pointer, :pointer, :int ], :pointer
-    attach_function :fdb_transaction_set_option, [ :pointer, :int, :pointer, :int ], :fdb_error
-    attach_function :fdb_transaction_set_read_version, [ :pointer, :int64 ], :void
-    attach_function :fdb_transaction_get_read_version, [ :pointer ], :pointer
-    attach_function :fdb_transaction_get, [ :pointer, :pointer, :int, :int ], :pointer
-    attach_function :fdb_transaction_get_key, [ :pointer, :pointer, :int, :int, :int, :int ], :pointer
-    attach_function :fdb_transaction_get_range, [ :pointer, :pointer, :int, :int, :int, :pointer, :int, :int, :int, :int, :int, :int, :int, :int, :int ], :pointer
-    attach_function :fdb_transaction_set, [ :pointer, :pointer, :int, :pointer, :int ], :void
-    attach_function :fdb_transaction_clear, [ :pointer, :pointer, :int ], :void
-    attach_function :fdb_transaction_clear_range, [ :pointer, :pointer, :int, :pointer, :int ], :void
-    attach_function :fdb_transaction_watch, [ :pointer, :pointer, :int ], :pointer
-    attach_function :fdb_transaction_commit, [ :pointer ], :pointer
-    attach_function :fdb_transaction_get_committed_version, [ :pointer, :pointer ], :fdb_error
-    attach_function :fdb_transaction_get_versionstamp, [ :pointer ], :pointer
-    attach_function :fdb_transaction_on_error, [ :pointer, :fdb_error ], :pointer
-    attach_function :fdb_transaction_reset, [ :pointer ], :void
-
     attach_function :fdb_select_api_version_impl, [ :int, :int ], :fdb_error
     attach_function :fdb_get_max_api_version, [ ], :int
+
+    def self.init_c_api
+      attach_function :fdb_get_error, [ :fdb_error ], :string
+
+      attach_function :fdb_network_set_option, [ :int, :pointer, :int ], :fdb_error
+      attach_function :fdb_setup_network, [ ], :fdb_error
+      attach_function :fdb_run_network, [ ], :fdb_error, :blocking => true
+      attach_function :fdb_stop_network, [ ], :fdb_error
+
+      attach_function :fdb_future_cancel, [ :pointer ], :void
+      attach_function :fdb_future_release_memory, [ :pointer ], :void
+      attach_function :fdb_future_destroy, [ :pointer ], :void
+      attach_function :fdb_future_block_until_ready, [ :pointer ], :fdb_error, :blocking => true
+      attach_function :fdb_future_is_ready, [ :pointer ], :fdb_bool
+
+      callback :fdb_future_callback, [ :pointer, :pointer ], :void
+      attach_function :fdb_future_set_callback, [ :pointer, :fdb_future_callback, :pointer ], :fdb_error
+
+      attach_function :fdb_future_get_error, [ :pointer ], :fdb_error
+      attach_function :fdb_future_get_int64, [ :pointer, :pointer ], :fdb_error
+      attach_function :fdb_future_get_key, [ :pointer, :pointer, :pointer ], :fdb_error
+      attach_function :fdb_future_get_value, [ :pointer, :pointer, :pointer, :pointer ], :fdb_error
+      attach_function :fdb_future_get_keyvalue_array, [ :pointer, :pointer, :pointer, :pointer ], :fdb_error
+      attach_function :fdb_future_get_string_array, [ :pointer, :pointer, :pointer ], :fdb_error
+
+      attach_function :fdb_create_database, [ :string, :pointer ], :fdb_error
+
+      attach_function :fdb_database_destroy, [ :pointer ], :void
+      attach_function :fdb_database_set_option, [ :pointer, :int, :pointer, :int ], :fdb_error
+
+      attach_function :fdb_database_create_transaction, [ :pointer, :pointer ], :fdb_error
+      attach_function :fdb_transaction_destroy, [ :pointer ], :void
+      attach_function :fdb_transaction_cancel, [ :pointer ], :void
+      attach_function :fdb_transaction_atomic_op, [ :pointer, :pointer, :int, :pointer, :int, :int ], :void
+      attach_function :fdb_transaction_add_conflict_range, [ :pointer, :pointer, :int, :pointer, :int, :int ], :int
+      attach_function :fdb_transaction_get_addresses_for_key, [ :pointer, :pointer, :int ], :pointer
+      attach_function :fdb_transaction_set_option, [ :pointer, :int, :pointer, :int ], :fdb_error
+      attach_function :fdb_transaction_set_read_version, [ :pointer, :int64 ], :void
+      attach_function :fdb_transaction_get_read_version, [ :pointer ], :pointer
+      attach_function :fdb_transaction_get, [ :pointer, :pointer, :int, :int ], :pointer
+      attach_function :fdb_transaction_get_key, [ :pointer, :pointer, :int, :int, :int, :int ], :pointer
+      attach_function :fdb_transaction_get_range, [ :pointer, :pointer, :int, :int, :int, :pointer, :int, :int, :int, :int, :int, :int, :int, :int, :int ], :pointer
+      attach_function :fdb_transaction_get_estimated_range_size_bytes, [ :pointer, :pointer, :int, :pointer, :int ], :pointer
+      attach_function :fdb_transaction_get_range_split_points, [ :pointer, :pointer, :int, :pointer, :int, :int64 ], :pointer
+      attach_function :fdb_transaction_set, [ :pointer, :pointer, :int, :pointer, :int ], :void
+      attach_function :fdb_transaction_clear, [ :pointer, :pointer, :int ], :void
+      attach_function :fdb_transaction_clear_range, [ :pointer, :pointer, :int, :pointer, :int ], :void
+      attach_function :fdb_transaction_watch, [ :pointer, :pointer, :int ], :pointer
+      attach_function :fdb_transaction_commit, [ :pointer ], :pointer
+      attach_function :fdb_transaction_get_committed_version, [ :pointer, :pointer ], :fdb_error
+      attach_function :fdb_transaction_get_approximate_size, [ :pointer ], :pointer
+      attach_function :fdb_transaction_get_versionstamp, [ :pointer ], :pointer
+      attach_function :fdb_transaction_on_error, [ :pointer, :fdb_error ], :pointer
+      attach_function :fdb_transaction_reset, [ :pointer ], :void
+    end
 
     class KeyValueStruct < FFI::Struct
       pack 4
@@ -128,6 +128,12 @@ module FDB
              :key_length, :int,
              :value, :pointer,
              :value_length, :int
+    end
+
+    class KeyStruct < FFI::Struct
+      pack 4
+      layout :key, :pointer,
+             :key_length, :int
     end
 
     def self.check_error(code)
@@ -156,7 +162,7 @@ module FDB
     @@ffi_callbacks
   end
 
-  [ "Network", "Cluster", "Database", "Transaction" ].each do |scope|
+  [ "Network", "Database", "Transaction" ].each do |scope|
     klass = FDB.const_set("#{scope}Options", Class.new)
     klass.class_eval do
       define_method(:initialize) do |setfunc|
@@ -170,7 +176,7 @@ module FDB
           Proc.new do || @setfunc.call(v[0], nil) end
         when String then
           Proc.new do |opt=nil| @setfunc.call(v[0], (opt.nil? ? opt : opt.encode('UTF-8')) ) end
-        when Fixnum then
+        when Integer then
           Proc.new do |opt| @setfunc.call(v[0], [opt].pack("q<")) end
         else
           raise ArgumentError, "Don't know how to set options of type #{v[2].class}"
@@ -242,6 +248,10 @@ module FDB
     nil
   end
 
+  class << self
+    private :init
+  end
+
   def self.stop()
     FDBC.check_error FDBC.fdb_stop_network
   end
@@ -254,11 +264,10 @@ module FDB
     end
   end
 
-  @@open_clusters = {}
   @@open_databases = {}
   @@cache_lock = Mutex.new
 
-  def self.open( cluster_file = nil, database_name = "DB" )
+  def self.open( cluster_file = nil )
     @@network_thread_monitor.synchronize do
       if ! @@network_thread
         init
@@ -266,15 +275,13 @@ module FDB
     end
 
     @@cache_lock.synchronize do
-      if ! @@open_clusters.has_key? cluster_file
-        @@open_clusters[cluster_file] = create_cluster( cluster_file )
+      if ! @@open_databases.has_key? [cluster_file]
+        dpointer = FFI::MemoryPointer.new :pointer
+        FDBC.check_error FDBC.fdb_create_database(cluster_file, dpointer)
+        @@open_databases[cluster_file] = Database.new dpointer.get_pointer(0)
       end
 
-      if ! @@open_databases.has_key? [cluster_file, database_name]
-        @@open_databases[[cluster_file, database_name]] = @@open_clusters[cluster_file].open_database(database_name)
-      end
-
-      @@open_databases[[cluster_file, database_name]]
+      @@open_databases[cluster_file]
     end
   end
 
@@ -445,11 +452,11 @@ module FDB
     end
   end
 
-  class Version < LazyFuture
+  class Int64Future < LazyFuture
     def getter
-      version = FFI::MemoryPointer.new :int64
-      FDBC.check_error FDBC.fdb_future_get_version(@fpointer, version)
-      @value = version.read_long_long
+      val = FFI::MemoryPointer.new :int64
+      FDBC.check_error FDBC.fdb_future_get_int64(@fpointer, val)
+      @value = val.read_long_long
     end
     private :getter
   end
@@ -469,6 +476,22 @@ module FDB
         KeyValue.new(x[:key].read_bytes(x[:key_length]),
                      x[:value].read_bytes(x[:value_length]))
        }, count.read_int, more.read_int]
+    end
+  end
+
+  class FutureKeyArray < Future
+    def wait
+      block_until_ready
+
+      ks = FFI::MemoryPointer.new :pointer
+      count = FFI::MemoryPointer.new :int
+      FDBC.check_error FDBC.fdb_future_get_key_array(@fpointer, kvs, count)
+      ks = ks.read_pointer
+
+      (0..count.read_int-1).map{|i|
+        x = FDBC::KeyStruct.new(ks + (i * FDBC::KeyStruct.size))
+        x[:key].read_bytes(x[:key_length])
+       }
     end
   end
 
@@ -500,41 +523,6 @@ module FDB
         rescue Exception
         end
       end
-    end
-  end
-
-  def self.create_cluster(cluster=nil)
-    f = FDBC.fdb_create_cluster(cluster)
-    cpointer = FFI::MemoryPointer.new :pointer
-    FDBC.check_error FDBC.fdb_future_block_until_ready(f)
-    FDBC.check_error FDBC.fdb_future_get_cluster(f, cpointer)
-    Cluster.new cpointer.get_pointer(0)
-  end
-
-  class Cluster < FormerFuture
-    attr_reader :options
-
-    def self.finalize(ptr)
-      proc do
-        # puts "Destroying cluster #{ptr}"
-        FDBC.fdb_cluster_destroy(ptr)
-      end
-    end
-
-    def initialize(cpointer)
-      @cpointer = cpointer
-      @options = ClusterOptions.new lambda { |code, param|
-        FDBC.check_error FDBC.fdb_cluster_set_option(cpointer, code, param, param.nil? ? 0 : param.bytesize)
-      }
-      ObjectSpace.define_finalizer(self, self.class.finalize(@cpointer))
-    end
-
-    def open_database(name="DB")
-      f = FDBC.fdb_cluster_create_database(@cpointer, name, name.bytesize)
-      dpointer = FFI::MemoryPointer.new :pointer
-      FDBC.check_error FDBC.fdb_future_block_until_ready(f)
-      FDBC.check_error FDBC.fdb_future_get_database(f, dpointer)
-      Database.new dpointer.get_pointer(0)
     end
   end
 
@@ -724,7 +712,7 @@ module FDB
     end
 
     def get_read_version
-      Version.new(FDBC.fdb_transaction_get_read_version @tpointer)
+      Int64Future.new(FDBC.fdb_transaction_get_read_version @tpointer)
     end
 
     def get(key)
@@ -853,6 +841,22 @@ module FDB
       prefix = prefix.dup.force_encoding "BINARY"
       get_range(prefix, FDB.strinc(prefix), options, &block)
     end
+
+    def get_estimated_range_size_bytes(begin_key, end_key)
+      bkey = FDB.key_to_bytes(begin_key)
+      ekey = FDB.key_to_bytes(end_key)
+      Int64Future.new(FDBC.fdb_transaction_get_estimated_range_size_bytes(@tpointer, bkey, bkey.bytesize, ekey, ekey.bytesize))
+    end
+
+    def get_range_split_points(begin_key, end_key, chunk_size)
+      if chunk_size <=0
+        raise ArgumentError, "Invalid chunk size"
+      end
+      bkey = FDB.key_to_bytes(begin_key)
+      ekey = FDB.key_to_bytes(end_key)
+      FutureKeyArray.new(FDBC.fdb_transaction_get_range_split_points(@tpointer, bkey, bkey.bytesize, ekey, ekey.bytesize, chunk_size))
+    end
+
   end
 
   TransactionRead.class_variable_set("@@StreamingMode", @@StreamingMode)
@@ -939,6 +943,10 @@ module FDB
       version = FFI::MemoryPointer.new :int64
       FDBC.check_error FDBC.fdb_transaction_get_committed_version(@tpointer, version)
       version.read_long_long
+    end
+
+    def get_approximate_size
+      Int64Future.new(FDBC.fdb_transaction_get_approximate_size @tpointer)
     end
 
     def get_versionstamp

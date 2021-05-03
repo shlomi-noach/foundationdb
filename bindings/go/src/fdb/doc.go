@@ -25,12 +25,12 @@ Package fdb provides an interface to FoundationDB databases (version 2.0 or high
 
 To build and run programs using this package, you must have an installed copy of
 the FoundationDB client libraries (version 2.0.0 or later), available for Linux,
-Windows and OS X at https://www.foundationdb.org/downloads/fdb-c/.
+Windows and OS X at https://www.foundationdb.org/download/.
 
 This documentation specifically applies to the FoundationDB Go binding. For more
 extensive guidance to programming with FoundationDB, as well as API
 documentation for the other FoundationDB interfaces, please see
-https://www.foundationdb.org/documentation/index.html.
+https://apple.github.io/foundationdb/index.html.
 
 Basic Usage
 
@@ -46,7 +46,7 @@ A basic interaction with the FoundationDB API is demonstrated below:
 
     func main() {
         // Different API versions may expose different runtime behaviors.
-        fdb.MustAPIVersion(200)
+        fdb.MustAPIVersion(700)
 
         // Open the default database from the system cluster
         db := fdb.MustOpenDefault()
@@ -139,6 +139,16 @@ error. The above example may be rewritten as:
         return []string{valueOne, valueTwo}, nil
     })
 
+MustGet returns nil (which is different from empty slice []byte{}), when the
+key doesn't exist, and hence non-existence can be checked as follows:
+
+    val := tr.Get(fdb.Key("foobar")).MustGet()
+    if val == nil {
+      fmt.Println("foobar does not exist.")
+    } else {
+      fmt.Println("foobar exists.")
+    }
+
 Any panic that occurs during execution of the caller-provided function will be
 recovered by the (Database).Transact method. If the error is an FDB Error, it
 will either result in a retry of the function or be returned by Transact. If the
@@ -198,12 +208,13 @@ operations perform different transformations. Like other database operations, an
 atomic operation is used within a transaction.
 
 For more information on atomic operations in FoundationDB, please see
-https://www.foundationdb.org/documentation/developer-guide.html#atomic-operations. The
+https://apple.github.io/foundationdb/developer-guide.html#atomic-operations. The
 operands to atomic operations in this API must be provided as appropriately
 encoded byte slices. To convert a Go type to a byte slice, see the binary
 package.
 
-The current atomic operations in this API are Add, BitAnd, BitOr, BitXor, Max, Min,
-SetVersionstampedKey, SetVersionstampedValue (all methods on Transaction).
+The current atomic operations in this API are Add, BitAnd, BitOr, BitXor,
+CompareAndClear, Max, Min, SetVersionstampedKey, SetVersionstampedValue
+(all methods on Transaction).
 */
 package fdb

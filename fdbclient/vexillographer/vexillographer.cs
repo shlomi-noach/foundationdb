@@ -30,7 +30,6 @@ namespace vexillographer
     public enum Scope
     {
         NetworkOption,
-        ClusterOption,
         DatabaseOption,
         TransactionOption,
         StreamingMode,
@@ -55,6 +54,8 @@ namespace vexillographer
         public string paramDesc { get; set; }
         public int code { get; set; }
         public bool hidden { get; set; }
+        public bool persistent { get; set; }
+        public int defaultFor { get; set; }
         private string _comment;
         public string comment {
             get {
@@ -133,6 +134,9 @@ namespace vexillographer
                         var paramTypeStr = oDoc.AttributeOrNull("paramType");
                         ParamType p = paramTypeStr == null ? ParamType.None : (ParamType)Enum.Parse(typeof(ParamType), paramTypeStr);
                         bool hidden = oDoc.AttributeOrNull("hidden") == "true";
+                        bool persistent = oDoc.AttributeOrNull("persistent") == "true";
+                        String defaultForString = oDoc.AttributeOrNull("defaultFor");
+                        int defaultFor = defaultForString == null ? -1 : int.Parse(defaultForString);
                         string disableOn = oDoc.AttributeOrNull("disableOn");
                         bool disabled = false;
                         if(disableOn != null)
@@ -151,7 +155,9 @@ namespace vexillographer
                                 paramType = p,
                                 paramDesc = oDoc.AttributeOrNull("paramDescription"),
                                 comment = oDoc.AttributeOrNull("description"),
-                                hidden = hidden
+                                hidden = hidden,
+                                persistent = persistent,
+                                defaultFor = defaultFor
                             });
                         }
                     }
@@ -172,8 +178,6 @@ namespace vexillographer
             {
                 case Scope.NetworkOption:
                     return "NET_OPTION";
-                case Scope.ClusterOption:
-                    return "CLUSTER_OPTION";
                 case Scope.DatabaseOption:
                     return "DB_OPTION";
                 case Scope.TransactionOption:

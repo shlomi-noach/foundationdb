@@ -14,7 +14,6 @@
 .. |reset-func-name| replace:: :func:`reset <Transaction.reset>`
 .. |reset-func| replace:: :func:`Transaction.reset`
 .. |cancel-func| replace:: :func:`Transaction.cancel`
-.. |init-func| replace:: :func:`fdb.init`
 .. |open-func| replace:: :func:`fdb.open`
 .. |on-error-func| replace:: :meth:`Transaction.on_error`
 .. |null-type| replace:: ``None``
@@ -22,8 +21,24 @@
 .. |error-raise-type| replace:: raise
 .. |future-cancel| replace:: :func:`Future.cancel`
 .. |max-watches-database-option| replace:: :func:`Database.options.set_max_watches`
+.. |retry-limit-database-option| replace:: :func:`Database.options.set_transaction_retry_limit`
+.. |timeout-database-option| replace:: :func:`Database.options.set_transaction_timeout`
+.. |max-retry-delay-database-option| replace:: :func:`Database.options.set_transaction_max_retry_delay`
+.. |transaction-size-limit-database-option| replace:: :func:`Database.options.set_transaction_size_limit`
+.. |causal-read-risky-database-option| replace:: :func:`Database.options.set_transaction_causal_read_risky`
+.. |transaction-logging-max-field-length-database-option| replace:: :func:`Database.options.set_transaction_logging_max_field_length`
+.. |snapshot-ryw-enable-database-option| replace:: :func:`Database.options.set_snapshot_ryw_enable`
+.. |snapshot-ryw-disable-database-option| replace:: :func:`Database.options.set_snapshot_ryw_disable`
 .. |future-type-string| replace:: a :ref:`future <api-python-future>`
 .. |read-your-writes-disable-option| replace:: :func:`Transaction.options.set_read_your_writes_disable`
+.. |retry-limit-transaction-option| replace:: :func:`Transaction.options.set_retry_limit`
+.. |timeout-transaction-option| replace:: :func:`Transaction.options.set_timeout`
+.. |max-retry-delay-transaction-option| replace:: :func:`Transaction.options.set_max_retry_delay`
+.. |size-limit-transaction-option| replace:: :func:`Transaction.options.set_size_limit`
+.. |snapshot-ryw-enable-transaction-option| replace:: :func:`Transaction.options.set_snapshot_ryw_enable`
+.. |snapshot-ryw-disable-transaction-option| replace:: :func:`Transaction.options.set_snapshot_ryw_disable`
+.. |causal-read-risky-transaction-option| replace:: :func:`Transaction.options.set_causal_read_risky`
+.. |transaction-logging-max-field-length-transaction-option| replace:: :func:`Transaction.options.set_transaction_logging_max_field_length`
 .. |lazy-iterator-object| replace:: generator
 .. |key-meth| replace:: :meth:`Subspace.key`
 .. |directory-subspace| replace:: :ref:`DirectorySubspace <api-python-directory-subspace>`
@@ -54,11 +69,15 @@ Python API
 Installation
 ============
 
-The FoundationDB Python API is compatible with Python 2.7 - 3.4. You will need to have a Python version within this range on your system before the FoundationDB Python API can be installed.
+The FoundationDB Python API is compatible with Python 2.7 - 3.7. You will need to have a Python version within this range on your system before the FoundationDB Python API can be installed. Also please note that Python 3.7 no longer bundles a full copy of libffi, which is used for building the _ctypes module on non-macOS UNIX platforms. Hence, if you are using Python 3.7, you should make sure libffi is already installed on your system.
 
-On macOS, the FoundationDB Python API is installed as part of the FoundationDB installation (see :ref:`installing-client-binaries`). On Ubuntu or RHEL/CentOS, you will need to install the FoundationDB Python API manually.
+On macOS, the FoundationDB Python API is installed as part of the FoundationDB installation (see :ref:`installing-client-binaries`). On Ubuntu or RHEL/CentOS, you will need to install the FoundationDB Python API manually via Python's package manager ``pip``:
 
-You can download the FoundationDB Python API source directly from :doc:`downloads`.
+.. code-block:: none
+
+    user@host$ pip install foundationdb
+
+You can also download the FoundationDB Python API source directly from :doc:`downloads`.
 
 .. note:: The Python language binding is compatible with FoundationDB client binaries of version 2.0 or higher. When used with version 2.0.x client binaries, the API version must be set to 200 or lower.
 
@@ -81,37 +100,24 @@ When you import the ``fdb`` module, it exposes only one useful symbol:
 
 .. warning:: |api-version-multi-version-warning|
 
-For API changes between version 13 and |api-version| (for the purpose of porting older programs), see :doc:`release-notes`.
+For API changes between version 13 and |api-version| (for the purpose of porting older programs), see :ref:`release-notes` and :doc:`api-version-upgrade-guide`.
 
 Opening a database
 ==================
 
-After importing the ``fdb`` module and selecting an API version, you probably want to open a :class:`Database`. The simplest way of doing this is using :func:`open`::
+After importing the ``fdb`` module and selecting an API version, you probably want to open a :class:`Database` using :func:`open`::
 
     import fdb
-    fdb.api_version(510)
+    fdb.api_version(700)
     db = fdb.open()
 
-.. function:: open( cluster_file=None, db_name="DB", event_model=None )
+.. function:: open( cluster_file=None, event_model=None )
 
-    |fdb-open-blurb|
+    |fdb-open-blurb1|
+
+    |fdb-open-blurb2|
 
     .. param event_model:: Can be used to select alternate :ref:`api-python-event-models`
-
-    .. note:: In this release, db_name must be "DB".
-
-    .. note:: ``fdb.open()`` combines the effect of :func:`init`, :func:`create_cluster`, and :meth:`Cluster.open_database`.
-
-.. function:: init()
-
-    Initializes the FoundationDB API, creating a thread for the FoundationDB client and initializing the client's networking engine. :func:`init()` can only be called once. If called subsequently or after :func:`open`, it will raise an ``client_invalid_operation`` error.
-
-.. function:: create_cluster( cluster_file=None )
-
-    Connects to the cluster specified by :ref:`cluster_file <foundationdb-cluster-file>`, or by a :ref:`default cluster file <default-cluster-file>` if
-    ``cluster_file`` is None. :func:`init` must be called first.
-
-    Returns a |future-type| :class:`Cluster` object.
 
 .. data:: options
 
@@ -132,7 +138,15 @@ After importing the ``fdb`` module and selecting an API version, you probably wa
     .. method :: fdb.options.set_trace_roll_size(bytes)
 
        |option-trace-roll-size-blurb|
-       
+
+    .. method :: fdb.options.set_trace_format(format)
+
+       |option-trace-format-blurb|
+
+    .. method :: fdb.options.set_trace_clock_source(source)
+
+       |option-trace-clock-source-blurb|
+
     .. method :: fdb.options.set_disable_multi_version_client_api()
 
        |option-disable-multi-version-client-api|
@@ -175,25 +189,12 @@ After importing the ``fdb`` module and selecting an API version, you probably wa
 
        |option-tls-key-bytes|
 
-Cluster objects
-===============
-
-.. class:: Cluster
-
-.. method:: Cluster.open_database(name="DB")
-
-    Opens a database with the given name.
-
-    Returns a |future-type| :class:`Database` object.
-
-    .. note:: In this release, name **must** be "DB".
-
 .. _api-python-keys:
 
 Keys and values
 ===============
 
-|keys-values-blurb| |byte-string| 
+|keys-values-blurb| |byte-string|
 
 |keys-values-other-types-blurb|
 
@@ -280,7 +281,7 @@ A |database-blurb1| |database-blurb2|
 
 .. method:: Database.get_key(key_selector)
 
-    Returns the key referenced by the specified :class:`KeySelector`. |sync-read| 
+    Returns the key referenced by the specified :class:`KeySelector`. |sync-read|
 
     |database-get-key-caching-blurb|
 
@@ -292,7 +293,7 @@ A |database-blurb1| |database-blurb2|
 
     If ``limit`` is specified, then only the first ``limit`` keys (and their values) in the range will be returned.
 
-    If ``reverse`` is True, then the last ``limit`` keys in the range will be returned in reverse order.
+    If ``reverse`` is True, then the last ``limit`` keys in the range will be returned in reverse order. Reading ranges in reverse is supported natively by the database and should have minimal extra cost.
 
     If ``streaming_mode`` is specified, it must be a value from the :data:`StreamingMode` enumeration. It provides a hint to FoundationDB about how to retrieve the specified range. This option should generally not be specified, allowing FoundationDB to retrieve the full range very efficiently.
 
@@ -381,6 +382,38 @@ Database options
 
     |option-datacenter-id-blurb|
 
+.. method:: Database.options.set_transaction_timeout(timeout)
+
+    |option-db-tr-timeout-blurb|
+
+.. method:: Database.options.set_transaction_retry_limit(retry_limit)
+
+    |option-db-tr-retry-limit-blurb|
+
+.. method:: Database.options.set_transaction_max_retry_delay(delay_limit)
+
+    |option-db-tr-max-retry-delay-blurb|
+
+.. method:: Database.options.set_transaction_size_limit(size_limit)
+
+    |option-db-tr-size-limit-blurb|
+
+.. method:: Database.options.set_transaction_causal_read_risky()
+
+    |option-db-causal-read-risky-blurb|
+
+.. method:: Database.options.set_transaction_logging_max_field_length(size_limit)
+
+    |option-db-tr-transaction-logging-max-field-length-blurb|
+
+.. method:: Database.options.set_snapshot_ryw_enable()
+
+    |option-db-snapshot-ryw-enable-blurb|
+
+.. method:: Database.options.set_snapshot_ryw_disable()
+
+    |option-db-snapshot-ryw-disable-blurb|
+
 .. _api-python-transactional-decorator:
 
 Transactional decoration
@@ -394,8 +427,8 @@ Transactional decoration
 
         @fdb.transactional
         def simple_function(tr, x, y):
-            tr['foo'] = x
-            tr['bar'] = y
+            tr[b'foo'] = x
+            tr[b'bar'] = y
 
     The ``@fdb.transactional`` decorator makes ``simple_function`` a transactional function.  All functions using this decorator must have an argument **named** ``tr``.  This specially named argument is passed a transaction that the function can use to do reads and writes.
 
@@ -459,7 +492,7 @@ Reading data
 .. method:: Transaction.get_key(key_selector)
 
     Returns the |future-type| :class:`Key` referenced by the specified :class:`KeySelector`.
-    
+
     |transaction-get-key-caching-blurb|
 
 .. method:: Transaction.get_range(begin, end[, limit, reverse, streaming_mode])
@@ -472,7 +505,7 @@ Reading data
 
     If ``limit`` is specified, then only the first ``limit`` keys (and their values) in the range will be returned.
 
-    If ``reverse`` is True, then the last ``limit`` keys in the range will be returned in reverse order.
+    If ``reverse`` is True, then the last ``limit`` keys in the range will be returned in reverse order. Reading ranges in reverse is supported natively by the database and should have minimal extra cost.
 
     If ``streaming_mode`` is specified, it must be a value from the :data:`StreamingMode` enumeration. It provides a hint to FoundationDB about how the returned container is likely to be used.  The default is :data:`StreamingMode.iterator`.
 
@@ -488,7 +521,7 @@ Reading data
 
     The ``limit``, ``reverse`` and ``streaming_mode`` parameters have the same meanings as in :meth:`Transaction.get_range()`.
 
-.. _api-python-snapshot-reads: 
+.. _api-python-snapshot-reads:
 
 Snapshot reads
 --------------
@@ -501,7 +534,7 @@ Snapshot reads
 
     |snapshot-blurb3|
 
-    |snapshot-blurb4|   
+    |snapshot-blurb4|
 
 .. attribute:: Transaction.snapshot.db
 
@@ -534,7 +567,7 @@ Snapshot reads
 
 .. method:: Transaction.snapshot.get_read_version()
 
-    Identical to :meth:`Transaction.get_read_version` (since snapshot and serializable reads use the same read version).
+    Identical to :meth:`Transaction.get_read_version` (since snapshot and strictly serializable reads use the same read version).
 
 
 Writing data
@@ -560,6 +593,8 @@ Writing data
 
     Removes all keys ``k`` such that ``begin <= k < end``, and their associated values. |immediate-return|
 
+    |transaction-clear-range-blurb|
+
     .. note :: Unlike in the case of :meth:`get_range`, ``begin`` and ``end`` must be keys (byte strings), not :class:`KeySelector`\ s.  (Resolving arbitrary key selectors would prevent this method from returning immediately, introducing concurrency issues.)
 
 ``del tr[begin:end]``
@@ -568,6 +603,8 @@ Writing data
 .. method:: Transaction.clear_range_startswith(prefix)
 
     Removes all the keys ``k`` such that ``k.startswith(prefix)``, and their associated values. |immediate-return|
+
+    |transaction-clear-range-blurb|
 
 .. _api-python-transaction-atomic-operations:
 
@@ -609,6 +646,10 @@ In each of the methods below, ``param`` should be a string appropriately packed 
 
     |atomic-xor|
 
+.. method:: Transaction.compare_and_clear(key, param)
+
+    |atomic-compare-and-clear|
+
 .. method:: Transaction.max(key, param)
 
     |atomic-max1|
@@ -618,7 +659,7 @@ In each of the methods below, ``param`` should be a string appropriately packed 
 .. method:: Transaction.byte_max(key, param)
 
     |atomic-byte-max|
-    
+
 .. method:: Transaction.min(key, param)
 
     |atomic-min1|
@@ -628,7 +669,7 @@ In each of the methods below, ``param`` should be a string appropriately packed 
 .. method:: Transaction.byte_min(key, param)
 
     |atomic-byte-min|
-    
+
 .. method:: Transaction.set_versionstamped_key(key, param)
 
     |atomic-set-versionstamped-key-1|
@@ -636,8 +677,6 @@ In each of the methods below, ``param`` should be a string appropriately packed 
     |atomic-versionstamps-1|
 
     |atomic-versionstamps-2|
-
-    |atomic-set-versionstamped-key-2|
 
     .. warning :: |atomic-versionstamps-tuple-warning-key|
 
@@ -687,9 +726,9 @@ Committing
 .. method :: Transaction.cancel()
 
     |transaction-cancel-blurb|
-    
+
     .. warning :: |transaction-reset-cancel-warning|
-    
+
     .. warning :: |transaction-commit-cancel-warning|
 
 .. _api-python-watches:
@@ -709,7 +748,7 @@ Watches
 
     |transaction-watch-limit-blurb|
 
-.. _api-python-conflict-ranges: 
+.. _api-python-conflict-ranges:
 
 Conflict ranges
 ---------------
@@ -721,7 +760,7 @@ Conflict ranges
 .. method:: Transaction.add_read_conflict_range(begin, end)
 
     |add-read-conflict-range-blurb|
-    
+
 .. method:: Transaction.add_read_conflict_key(key)
 
     |add-read-conflict-key-blurb|
@@ -755,7 +794,28 @@ Most applications should use the read version that FoundationDB determines autom
 
     |infrequent| |transaction-get-versionstamp-blurb|
 
+Transaction misc functions
+--------------------------
+
+.. method:: Transaction.get_estimated_range_size_bytes(begin_key, end_key)
+
+    Gets the estimated byte size of the given key range. Returns a :class:`FutureInt64`.
+    .. note:: The estimated size is calculated based on the sampling done by FDB server. The sampling algorithm works roughly in this way: the larger the key-value pair is, the more likely it would be sampled and the more accurate its sampled size would be. And due to that reason it is recommended to use this API to query against large ranges for accuracy considerations. For a rough reference, if the returned size is larger than 3MB, one can consider the size to be accurate.
+
+.. method:: Transaction.get_range_split_points(self, begin_key, end_key, chunk_size)
+
+    Gets a list of keys that can split the given range into (roughly) equally sized chunks based on ``chunk_size``. Returns a :class:`FutureKeyArray`.
+    .. note:: The returned split points contain the start key and end key of the given range
+
+
 .. _api-python-transaction-options:
+
+Transaction misc functions
+--------------------------
+
+.. method:: Transaction.get_approximate_size()
+
+    |transaction-get-approximate-size-blurb|. Returns a :class:`FutureInt64`.
 
 Transaction options
 -------------------
@@ -781,6 +841,8 @@ Transaction options
     |option-priority-system-immediate-blurb|
 
     .. warning:: |option-priority-system-immediate-warning|
+
+.. _api-python-option-set-causal-read-risky:
 
 .. method:: Transaction.options.set_causal_read_risky
 
@@ -819,30 +881,42 @@ Transaction options
     |option-read-system-keys-blurb|
 
     .. warning:: |option-read-system-keys-warning|
-    
+
 .. method:: Transaction.options.set_retry_limit
 
     |option-set-retry-limit-blurb1|
 
     |option-set-retry-limit-blurb2|
-    
+
 .. method:: Transaction.options.set_max_retry_delay
 
     |option-set-max-retry-delay-blurb|
+
+.. method:: Transaction.options.set_size_limit
+
+    |option-set-size-limit-blurb|
 
 .. _api-python-timeout:
 
 .. method:: Transaction.options.set_timeout
 
     |option-set-timeout-blurb1|
-    
+
     |option-set-timeout-blurb2|
 
     |option-set-timeout-blurb3|
 
-.. method:: Transaction.options.set_durability_dev_null_is_web_scale
+.. method:: Transaction.options.set_transaction_logging_max_field_length(size_limit)
 
-    |option-durability-dev-null-is-web-scale-blurb|
+    |option-set-transaction-logging-max-field-length-blurb|
+
+.. method:: Transaction.options.set_debug_transaction_identifier(id_string)
+
+    |option-set-debug-transaction-identifier|
+
+.. method:: Transaction.options.set_log_transaction()
+
+    |option-set-log-transaction|
 
 .. _api-python-future:
 
@@ -875,6 +949,8 @@ All future objects are a subclass of the :class:`Future` type.
 
     Calls the specified callback function, passing itself as a single argument, when the future object is ready. If the future object is ready at the time :meth:`on_ready()` is called, the call may occur immediately in the current thread (although this behavior is not guaranteed). Otherwise, the call may be delayed and take place on the thread with which the client was initialized. Therefore, the callback is responsible for any needed thread synchronization (and/or for posting work to your application's event loop, thread pool, etc., as may be required by your application's architecture).
 
+    .. note:: This function guarantees the callback will be executed **at most once**.
+
 .. warning:: |fdb-careful-with-callbacks-blurb|
 
 .. method:: Future.cancel()
@@ -897,7 +973,7 @@ Asynchronous methods return one of the following subclasses of :class:`Future`:
 
         @fdb.transactional
         def foo(tr):
-            val = tr['foo']
+            val = tr[b'foo']
             if val.present():
                 print 'Got value: %s' % val
             else:
@@ -907,9 +983,9 @@ Asynchronous methods return one of the following subclasses of :class:`Future`:
 
     Represents a future string object and responds to the same methods as string in Python. They may be passed to FoundationDB methods that expect a string.
 
-.. class:: FutureVersion
+.. class:: FutureInt64
 
-    Represents a future version (integer). You must call the :meth:`Future.wait()` method on this object to retrieve the version as an integer.
+    Represents a future integer. You must call the :meth:`Future.wait()` method on this object to retrieve the integer.
 
 .. class:: FutureStringArray
 
@@ -970,7 +1046,7 @@ The following streaming modes are available:
 Event models
 ============
 
-By default, the FoundationDB Python API assumes that the calling program uses threads (as provided by the ``threading`` module) for concurrency.  This means that blocking operations will block the current Python thread.  This behavior can be changed by specifying the optional ``event_model`` parameter to the :func:`open` or :func:`init` functions.
+By default, the FoundationDB Python API assumes that the calling program uses threads (as provided by the ``threading`` module) for concurrency.  This means that blocking operations will block the current Python thread.  This behavior can be changed by specifying the optional ``event_model`` parameter to the :func:`open` function.
 
 The following event models are available:
 
@@ -1068,7 +1144,7 @@ the most part, this also implies that ``T == fdb.tuple.unpack(fdb.tuple.pack(T))
 .. method:: pack(tuple, prefix=b'')
 
     Returns a key (byte string) encoding the specified tuple. If ``prefix`` is set, it will prefix the serialized
-    bytes with the prefix string. This throws an error if any of the tuple's items are incomplete `Versionstamp`
+    bytes with the prefix string. This throws an error if any of the tuple's items are incomplete :class:`Versionstamp`
     instances.
 
 .. method:: pack_with_versionstamp(tuple, prefix=b'')
@@ -1078,8 +1154,8 @@ the most part, this also implies that ``T == fdb.tuple.unpack(fdb.tuple.pack(T))
     recurse down nested tuples if there are any to find one.) If so, it will produce a byte string
     that can be fed into :meth:`fdb.Transaction.set_versionstamped_key` and correctly fill in the
     versionstamp information at commit time so that when the key is re-read and deserialized, the
-    only difference is that the `Versionstamp` instance is complete and has the transaction version
-    filled in. This throws an error if there are no incomplete `Versionstamp` instances in the tuple
+    only difference is that the :class:`Versionstamp` instance is complete and has the transaction version
+    filled in. This throws an error if there are no incomplete :class:`Versionstamp` instances in the tuple
     or if there is more than one.
 
 .. method:: unpack(key)
@@ -1089,9 +1165,9 @@ the most part, this also implies that ``T == fdb.tuple.unpack(fdb.tuple.pack(T))
 .. method:: has_incomplete_versionstamp(tuple)
 
     Returns ``True`` if there is at least one element contained within the tuple that is a
-    :class`Versionstamp` instance that is incomplete. If there are multiple incomplete
+    :class:`Versionstamp` instance that is incomplete. If there are multiple incomplete
     :class:`Versionstamp` instances, this method will return ``True``, but trying to pack it into a
-    byte string will result in an error. 
+    byte string will result in an error.
 
 .. method:: range(tuple)
 
@@ -1114,7 +1190,7 @@ the most part, this also implies that ``T == fdb.tuple.unpack(fdb.tuple.pack(T))
    differ from the default sort when non-ASCII characters are included within the string), and UUIDs are sorted
    based on their big-endian byte representation. Single-precision floating point numbers are sorted before all
    double-precision floating point numbers, and for floating point numbers, -NaN is sorted before -Infinity which
-   is sorted before finite numbers which are sorted before Infinity which is sorted before NaN. Different represetations
+   is sorted before finite numbers which are sorted before Infinity which is sorted before NaN. Different representations
    of NaN are not treated as equal.
 
    Additionally, the tuple serialization contract is such that after they are serialized, the byte-string representations
@@ -1217,7 +1293,7 @@ the most part, this also implies that ``T == fdb.tuple.unpack(fdb.tuple.pack(T))
    Static initializer for ``Versionstamp`` instances that takes a serialized ``Versionstamp`` and
    creates an instance of the class. The ``bytes`` parameter should be a byte string of length 12.
    This method will serialize the version as a "complete" ``Versionstamp`` unless the dummy bytes
-   are equal to the default transaction version assigned to incomplete ``Versionstamps``. 
+   are equal to the default transaction version assigned to incomplete ``Versionstamps``.
 
 .. method:: Versionstamp.is_complete()
 
@@ -1283,7 +1359,7 @@ Subspaces
     :meth:`fdb.Transaction.set_versionstampe_key` method. The passed tuple must contain exactly one incomplete
     :class:`fdb.tuple.Versionstamp` instance or the method will raise an error. The behavior here is the same
     as if one used the :meth:`fdb.tuple.pack_with_versionstamp` method to appropriately pack together
-    this subspace and the passed tuple. 
+    this subspace and the passed tuple.
 
 .. method:: Subspace.unpack(key)
 
@@ -1314,7 +1390,7 @@ Subspaces
     ``x = subspace[item]``
 
     Shorthand for ``x = subspace.subspace((item,))``. This function can be combined with the :meth:`Subspace.as_foundationdb_key()` convenience to turn this::
-    
+
         s = fdb.Subspace(('x',))
         tr[s.pack(('foo', 'bar', 1))] = ''
 
@@ -1395,7 +1471,7 @@ Directories
 .. method:: DirectoryLayer.exists(tr, path)
 
     |directory-exists-blurb|
-    
+
 .. method:: DirectoryLayer.get_layer()
 
     |directory-get-layer-blurb|
@@ -1429,7 +1505,7 @@ Locality information
 .. method:: fdb.locality.get_boundary_keys(db_or_tr, begin, end)
 
     |locality-get-boundary-keys-blurb|
-    
+
     |locality-get-boundary-keys-db-or-tr|
 
     Like a |future-object|, the returned container issues asynchronous read operations to fetch the data in the range and may block while iterating over its values if the read has not completed.
@@ -1439,4 +1515,3 @@ Locality information
 .. method:: fdb.locality.get_addresses_for_key(tr, key)
 
     Returns a :class:`fdb.FutureStringArray`. You must call the :meth:`fdb.Future.wait()` method on this object to retrieve a list of public network addresses as strings, one for each of the storage servers responsible for storing ``key`` and its associated value.
-    

@@ -14,7 +14,7 @@ Documentation
 
 FoundationDB is a robust choice for a broad range of use cases:
 
-**Developers can store all types of data.** FoundationDB is multi-model, meaning you can store many types data in a single database. All data is safely stored, distributed, and replicated in FoundationDB.
+**Developers can store all types of data.** FoundationDB is multi-model, meaning you can store many types of data in a single database. All data is safely stored, distributed, and replicated in FoundationDB.
 
 **Administrators easily scale and handle hardware failures.** FoundationDB is easy to install, grow, and manage. It has a distributed architecture that gracefully scales out and handles faults while acting like a single ACID database.
 
@@ -22,7 +22,7 @@ FoundationDB is a robust choice for a broad range of use cases:
 
 **FoundationDB supports flexible application architectures.** Your application can talk directly to FoundationDB, to a layer, or both. Layers provide new capability on top of FoundationDB but are stateless.
 
-The latest changes are detailed in :doc:`release-notes`. The documentation has the following sections:
+The latest changes are detailed in :ref:`release-notes`. The documentation has the following sections:
 
 * :doc:`why-foundationdb` describes the technical alternatives involved in NoSQL database design and explains the advantages of transaction processing at scale.
 
@@ -50,4 +50,5 @@ The latest changes are detailed in :doc:`release-notes`. The documentation has t
    design-recipes
    api-reference
    tutorials
+   administration
    earlier-release-notes

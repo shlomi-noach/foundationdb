@@ -1,8 +1,8 @@
 .. _backups:
 
-######################
+######################################################
 Backup, Restore, and Replication for Disaster Recovery
-######################
+######################################################
 
 .. include:: guide-common.rst.inc
 
@@ -24,14 +24,14 @@ Backup vs DR
 
 FoundationDB can backup a database to local disks, a blob store (such as Amazon S3), or to another FoundationDB database.  
 
-Backing up one database to another is a special form of backup is called DR backup or just DR for short.  DR stands for Disaster Recovery, as it can be used to keep two geographically separated databases in close synchronization to recover from a catastrophic disaster.  Once a DR  operation has reached 'differential' mode, the secondary database (the destination of the DR job) will always contains a *consistent* copy of the primary database (the source of the DR job) but it will be from some past point in time.  If the primary database is lost and applications continue using the secondary database, the "ACI" in ACID is preserved but D (Durability) is lost for some amount of most recent changes.  When DR is operating normally, the secondary database will lag behind the primary database by as little as a few seconds worth of database commits.
+Backing up one database to another is a special form of backup is called DR backup or just DR for short.  DR stands for Disaster Recovery, as it can be used to keep two geographically separated databases in close synchronization to recover from a catastrophic disaster.  Once a DR  operation has reached 'differential' mode, the secondary database (the destination of the DR job) will always contain a *consistent* copy of the primary database (the source of the DR job) but it will be from some past point in time.  If the primary database is lost and applications continue using the secondary database, the "ACI" in ACID is preserved but D (Durability) is lost for some amount of most recent changes.  When DR is operating normally, the secondary database will lag behind the primary database by as little as a few seconds worth of database commits.
 
 While a cluster is being used as the destination for a DR operation it will be locked to prevent accidental use or modification.
 
 Limitations
 ===========
 
-Backup data is not encrypted on disk, in a blob store account, or in transit to a destination blob store account or database.
+Backup data is not encrypted at rest on disk or in a blob store account.
 
 Tools
 ===========
@@ -39,7 +39,7 @@ Tools
 There are 5 command line tools for working with Backup and DR operations:
 
 ``fdbbackup``
-    This command line tool is used to control (but not execute) backup jobs and manage backup data.  It can ``start`` or ``abort`` a backup, ``discontinue`` a continuous backup, get the ``status`` of an ongoing backup, or ``wait`` for a backup to complete.  It can also ``describe``, ``delete``, ``expire`` data in a backup, or ``list`` the backups at a destination folder URL.
+    This command line tool is used to control (but not execute) backup jobs and manage backup data.  It can ``start``, ``modify`` or ``abort`` a backup, ``discontinue`` a continuous backup, get the ``status`` of an ongoing backup, or ``wait`` for a backup to complete.  It can also ``describe``, ``delete``, ``expire`` data in a backup, or ``list`` the backups at a destination folder URL.
 
 ``fdbrestore``
     This command line tool is used to control (but not execute) restore jobs.  It can ``start`` or ``abort`` a restore, get the ``status`` of current and recent restore tasks, or ``wait`` for a restore task to complete while printing ongoing progress details.
@@ -83,39 +83,62 @@ For blob store backup locations, the Backup URL format is
 
 ::
 
-    blobstore://<api_key>[:<secret>]@<hostname>[:<port>]/<name>[?<param>=<value>[&<param>=<value>]...]
+    blobstore://<api_key>[:<secret>]@<hostname>[:<port>]/<name>?bucket=<bucket_name>[&<param>=<value>]...]
 
       <api_key> - API key to use for authentication
       <secret> - API key's secret.  Optional.
       <hostname> - Remote hostname or IP address to connect to
       <port> - Remote port to connect to.  Optional.  Default is 80.
-      <name> - Name of backup.  It can contain '/' characters, to place backups into a folder-like structure.
+      <name> - Name of the backup within the backup bucket.  It can contain '/' characters in order to organize backups into a folder-like structure.
+      <bucket_name> - Name of the bucket to use for backup data.
       
       <param>=<value> - Optional URL parameters.  See below for details.
 
+A single bucket (specified by <bucket_name>) can hold any number of backups, each with a different <name>.
+
 If <secret> is not specified, it will be looked up in :ref:`blob credential sources<blob-credential-files>`.
 
-An example blob store Backup URL would be ``blobstore://myKey:mySecret@something.domain.com:80/dec_1_2017_0400``.
+An example blob store Backup URL would be ``blobstore://myKey:mySecret@something.domain.com:80/dec_1_2017_0400?bucket=backups``.
 
-Blob store Backup URLs can have optional parameters at the end which set various limits on interactions with the blob store.  All values must be positive decimal integers.  The default values are not very restrictive.  The most likely parameter a user would want to change is ``max_send_bytes_per_second`` (or ``sbps`` for short) which determines the upload speed to the blob service.
+Blob store Backup URLs can have optional parameters at the end which set various limits or options used when communicating with the store.  All values must be positive decimal integers unless otherwise specified.  The speed related default values are not very restrictive.  The most likely parameter a user would want to change is ``max_send_bytes_per_second`` (or ``sbps`` for short) which determines the upload speed to the blob service.
 
 Here is a complete list of valid parameters:
 
+ *secure_connection* (or *sc*) - Set 1 for secure connection and 0 for unsecure connection. Defaults to secure connection.
+
  *connect_tries* (or *ct*) - Number of times to try to connect for each request.
+
+ *connect_timeout* (or *cto*) - Number of seconds to wait for a connect request to succeed.
+
+ *max_connection_life* (or *mcl*) - Maximum number of seconds to reuse a single TCP connection.
+
+ *request_timeout_min* (or *rtom*) - Minimum number of seconds to wait for a request to succeed after a connection is established.
 
  *request_tries* (or *rt*) - Number of times to try each request until a parseable HTTP response other than 429 is received.
 
  *requests_per_second* (or *rps*) - Max number of requests to start per second.
 
+ *list_requests_per_second* (or *lrps*) - Max number of list requests to start per second.
+
+ *write_requests_per_second* (or *wrps*) - Max number of write requests to start per second.
+
+ *read_requests_per_second* (or *rrps*) - Max number of read requests to start per second.
+
+ *delete_requests_per_second* (or *drps*) - Max number of delete requests to start per second.
+
  *concurrent_requests* (or *cr*) - Max number of requests in progress at once.
+
+ *concurrent_uploads* (or *cu*) - Max concurrent uploads (part or whole) that can be in progress at once.
+
+ *concurrent_lists* (or *cl*) - Max concurrent list operations that can be in progress at once.
+
+ *concurrent_reads_per_file* (or *crps*) - Max concurrent reads in progress for any one file.
+
+ *concurrent_writes_per_file* (or *cwps*)  Max concurrent uploads in progress for any one file.
 
  *multipart_max_part_size* (or *maxps*) - Max part size for multipart uploads.
 
  *multipart_min_part_size* (or *minps*) - Min part size for multipart uploads.
-
- *concurrent_uploads* (or *cu*) - Max concurrent uploads (part or whole) that can be in progress at once.
-
- *concurrent_reads_per_file* (or *crps*) - Max concurrent reads in progress for any one file.
 
  *read_block_size* (or *rbs*) - Block size in bytes to be used for reads.
 
@@ -125,7 +148,11 @@ Here is a complete list of valid parameters:
 
  *max_send_bytes_per_second* (or *sbps*) - Max send bytes per second for all requests combined.
 
- *max_recv_bytes_per_second* (or *rbps*) - Max receive bytes per second for all requests combined
+ *max_recv_bytes_per_second* (or *rbps*) - Max receive bytes per second for all requests combined.
+
+ *header* - Add an additional HTTP header to each blob store REST API request.  Can be specified multiple times.  Format is *header=<FieldName>:<FieldValue>* where both strings are non-empty.
+ 
+  **Example**: The URL parameter *header=x-amz-storage-class:REDUCED_REDUNDANCY* would send the HTTP header required to use the reduced redundancy storage option in the S3 API.
 
 .. _blob-credential-files:
 
@@ -150,6 +177,28 @@ The Blob Credential File format is JSON with the following schema:
     }
   }
 
+TLS Support
+===========
+
+In-flight traffic for blob store or disaster recovery backups can be encrypted with the following environment variables. They are also offered as command-line flags or can be specified in ``foundationdb.conf`` for backup agents.
+
+============================ ====================================================
+Environment Variable         Purpose
+============================ ====================================================
+``FDB_TLS_CERTIFICATE_FILE`` Path to the file from which the local certificates
+                             can be loaded, used by the plugin
+``FDB_TLS_KEY_FILE``         Path to the file from which to load the private
+                             key, used by the plugin
+``FDB_TLS_PASSWORD``         The byte-string representing the passcode for
+                             unencrypting the private key
+``FDB_TLS_CA_FILE``          Path to the file containing the CA certificates
+                             to trust. Specify to override the default openssl
+                             location.
+``FDB_TLS_VERIFY_PEERS``     The byte-string for the verification of peer
+                             certificates and sessions.
+============================ ====================================================
+
+Blob store backups can be configured to use HTTPS/TLS by setting the ``secure_connection`` or ``sc`` backup URL option to ``1``, which is the default. Disaster recovery backups are secured by using TLS for both the source and target clusters and setting the TLS options for the ``fdbdr`` and ``dr_agent`` commands.
 
 ``fdbbackup`` command line tool
 ===============================
@@ -168,7 +217,7 @@ The following options apply to most subcommands:
   Path to the cluster file that should be used to connect to the FoundationDB cluster you want to use.  If not specified, a :ref:`default cluster file <default-cluster-file>` will be used.
 
 ``-d <BACKUP_URL>``
-  The Backup URL which the subcommand should read, write, or modify.  For ``start`` operations, the Backup URL must be accessible by the ``backup_agent`` processes.
+  The Backup URL which the subcommand should read, write, or modify.  For ``start`` and ``modify`` operations, the Backup URL must be accessible by the ``backup_agent`` processes.
 
 ``-t <TAG>``
   A "tag" is a named slot in which a backup task executes.  Backups on different named tags make progress and are controlled independently, though their executions are handled by the same set of backup agent processes.  Any number of unique backup tags can be active at once.  It the tag is not specified, the default tag name "default" is used.
@@ -187,13 +236,19 @@ The ``start`` subcommand is used to start a backup.  If there is already a backu
 
 ::
 
-   user@host$ fdbbackup start [-t <TAG>] -d <BACKUP_URL> [-z] [-s <DURATION>] [-w] [-k '<BEGIN>[ <END>]']...
+   user@host$ fdbbackup start [-t <TAG>] -d <BACKUP_URL> [-z] [-s <DURATION>] [--partitioned_log_experimental] [-w] [-k '<BEGIN>[ <END>]']...
 
 ``-z``
   Perform the backup continuously rather than terminating once a restorable backup is achieved.  Database mutations within the backup's target key ranges will be continuously written to the backup as well as repeated inconsistent snapshots at the configured snapshot rate.
 
 ``-s <DURATION>`` or ``--snapshot_interval <DURATION>``  
   Specifies the duration, in seconds, of the inconsistent snapshots written to the backup in continuous mode.  The default is 864000 which is 10 days.
+
+``--initial_snapshot_interval <DURATION>``  
+  Specifies the duration, in seconds, of the first inconsistent snapshot written to the backup.  The default is 0, which means as fast as possible.
+
+``--partitioned_log_experimental``
+  Specifies the backup uses the partitioned mutation logs generated by backup workers. Since FDB version 6.3, this option is experimental and requires using fast restore for restoring the database from the generated files. The default is to use non-partitioned mutation logs generated by backup agents.
 
 ``-w``
   Wait for the backup to complete with behavior identical to that of the :ref:`wait command <backup-wait>`.
@@ -205,6 +260,29 @@ The ``start`` subcommand is used to start a backup.  If there is already a backu
 
      user@host$ fdbbackup start -k 'apple bananna' -k 'mango pineapple' -d <BACKUP_URL>
      user@host$ fdbbackup start -k '@pp1e b*n*nn*' -k '#an&0 p^n3app!e' -d <BACKUP_URL>
+
+.. program:: fdbbackup modify
+
+``modify``
+----------
+
+The ``modify`` subcommand is used to modify parameters of a running backup.  All specified changes are made in a single transaction.
+
+::
+
+   user@host$ fdbbackup modify [-t <TAG>] [-d <BACKUP_URL>] [-s <DURATION>] [--active_snapshot_interval <DURATION>] [--verify_uid <UID>]
+
+``-d <BACKUP_URL>``
+  Sets a new Backup URL for the backup to write to.  This is most likely to be used to change only URL parameters or account information.  However, it can also be used to start writing to a new destination mid-backup.  The new old location will cease gaining any additional restorability, while the new location will not be restorable until a new snapshot begins and completes.  Full restorability would be regained, however, if the contents of the two destinations were to be combined by the user.
+
+``-s <DURATION>`` or ``--snapshot_interval <DURATION>``  
+  Sets a new duration for backup snapshots, in seconds.
+
+``--active_snapshot_interval <DURATION>``  
+  Sets new duration for the backup's currently active snapshot, in seconds, relative to the start of the snapshot.
+
+``--verify_uid <UID>``
+  Specifies a UID to verify against the BackupUID of the running backup.  If provided, the UID is verified in the same transaction which sets the new backup parameters (if the UID matches).
 
 .. program:: fdbbackup abort
 
@@ -282,7 +360,7 @@ The ``expire`` subcommand will remove data from a backup prior to some point in 
 The expiration CUTOFF must be specified by one of the two following arguments:
    
   ``--expire_before_timestamp <DATETIME>``
-    Specifies the expiration cutoff to DATETIME.  Requires a cluster file and will use version/timestamp metadata in the database to convert DATETIME to a database commit version.  DATETIME must be in the form "YYYY-MM-DD.HH:MI:SS" in UTC.
+    Specifies the expiration cutoff to DATETIME.  Requires a cluster file and will use version/timestamp metadata in the database to convert DATETIME to a database commit version.  DATETIME must be in the form "YYYY/MM/DD.HH:MI:SS+hhmm", for example "2018/12/31.23:59:59-0800".
 
   ``--expire_before_version <VERSION>``
     Specifies the cutoff by a database commit version.
@@ -290,7 +368,7 @@ The expiration CUTOFF must be specified by one of the two following arguments:
 Optionally, the user can specify a minimum RESTORABILITY guarantee with one of the following options.
 
   ``--restorable_after_timestamp <DATETIME>``
-    Specifies that the backup must be restorable to DATETIME and later.  Requires a cluster file and will use version/timestamp metadata in the database to convert DATETIME to a database commit version.  DATETIME must be in the form "YYYY-MM-DD.HH:MI:SS" in UTC.
+    Specifies that the backup must be restorable to DATETIME and later.  Requires a cluster file and will use version/timestamp metadata in the database to convert DATETIME to a database commit version.  DATETIME must be in the form "YYYY/MM/DD.HH:MI:SS+hhmm", for example "2018/12/31.23:59:59-0800".
 
   ``--restorable_after_version <VERSION>``
     Specifies that the backup must be restorable as of VERSION and later.
@@ -301,7 +379,7 @@ Optionally, the user can specify a minimum RESTORABILITY guarantee with one of t
 .. program:: fdbbackup describe
 
 ``describe``
-----------
+------------
 
 The ``describe`` subcommand will analyze the given backup and print a summary of the snapshot and mutation data versions it contains as well as the version range of restorability the backup can currently provide.
 
@@ -325,7 +403,25 @@ The ``list`` subcommand will list the backups at a given 'base' or shortened Bac
    user@host$ fdbbackup list -b <BASE_URL>
 
 ``-b <BASE_URL>`` or ``--base_url <BASE_URL>``
-  This a shortened Backup URL which looks just like a Backup URL but without the backup name so that the list command will discover and list all of the backups under that base URL.
+  This a shortened Backup URL which looks just like a Backup URL but without the backup <name> so that the list command will discover and list all of the backups in the bucket.
+
+
+.. program:: fdbbackup cleanup
+
+``cleanup``
+------------
+
+The ``cleanup`` subcommand will list orphaned backups and DRs and optionally remove their mutations.
+
+::
+
+   user@host$ fdbbackup cleanup [--delete_data] [--min_cleanup_seconds] [-C <CLUSTER_FILE>] 
+
+``--delete_data``
+  This flag will cause ``cleanup`` to remove mutations for the most stale backup or DR.
+
+``--min_cleanup_seconds``
+  Specifies the amount of time a backup or DR needs to be stale before ``cleanup`` will remove mutations for it. By default this is set to one hour.
 
 
 ``fdbrestore`` command line tool
@@ -351,11 +447,11 @@ The following options apply to all commands:
 
   .. warning:: If multiple restore tasks are in progress they should be restoring to different prefixes or the result is undefined.
 
-``-C <CLUSTER_FILE>``
-  Path to the cluster file that should be used to connect to the FoundationDB cluster you want to use.  If not specified, a :ref:`default cluster file <default-cluster-file>` will be used.
-
 ``--blob_credentials <FILE>``
   Use FILE as a :ref:`Blob Credential File<blob-credential-files>`.  Can be used multiple times.
+
+``--dest_cluster_file <CONNFILE>``
+  Required.  Path to the cluster file that should be used to connect to the FoundationDB cluster you are restoring to.
 
 .. _restore-start:
 
@@ -387,6 +483,15 @@ The ``start`` command will start a new restore on the specified (or default) tag
 
 ``-v <VERSION>``
   Instead of the latest version the backup can be restored to, restore to VERSION.
+
+``--timestamp <DATETIME>``
+  Instead of the latest version the backup can be restored to, restore to a version from approximately the given timestamp.  Requires orig_cluster_file to be specified.  DATETIME must be in the form "YYYY/MM/DD.HH:MI:SS+hhmm", for example "2018/12/31.23:59:59-0800".
+
+``--orig_cluster_file <CONNFILE>``
+  The cluster file for the original database from which the backup was created.  The original database is only needed to convert a --timestamp argument to a database version.
+
+``--inconsistent_snapshot_only``
+  Ignore mutation log files during the restore to speedup the process. Because only range files are restored, this option gives an inconsistent snapshot in most cases and is not recommended to use.
 
 .. program:: fdbrestore abort
 
@@ -476,7 +581,7 @@ The ``start`` subcommand is used to start a DR backup.  If there is already a DR
 
 The ``switch`` subcommand is used to swap the source and destination database clusters of an active DR in differential mode.  This means the destination will be unlocked and start streaming data into the source database, which will subsequently be locked.
 
-This command requires both databases to be available.  While the switch command is working, both databases will be locked for a few seconds.
+This command requires both databases to be available.  On the destination cluster, a ``dr_agent`` that points to the source cluster must be running.  While the switch command is working, both databases will be locked for a few seconds.
 
 .. program:: fdbdr abort
 

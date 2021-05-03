@@ -27,89 +27,34 @@ from bindingtester import FDB_API_VERSION
 from bindingtester import util
 
 from bindingtester.tests import test_util
+from bindingtester.tests.directory_state_tree import DirectoryStateTreeNode
 
 fdb.api_version(FDB_API_VERSION)
 
 DEFAULT_DIRECTORY_INDEX = 4
-DEFAULT_DIRECTORY_PREFIX = 'default'
-DIRECTORY_ERROR_STRING = 'DIRECTORY_ERROR'
-
-
-class DirListEntry:
-    dir_id = 0  # Used for debugging
-
-    def __init__(self, is_directory, is_subspace, has_known_prefix=True, path=(), root=None):
-        self.root = root or self
-        self.path = path
-        self.is_directory = is_directory
-        self.is_subspace = is_subspace
-        self.has_known_prefix = has_known_prefix
-        self.children = {}
-
-        self.dir_id = DirListEntry.dir_id + 1
-        DirListEntry.dir_id += 1
-
-    def __repr__(self):
-        return 'DirEntry %d %r: %d' % (self.dir_id, self.path, self.has_known_prefix)
-
-    def add_child(self, subpath, default_path, root, child):
-        if default_path in root.children:
-            # print 'Adding child %r to default directory %r at %r' % (child, root.children[DirectoryTest.DEFAULT_DIRECTORY_PATH].path, subpath)
-            c = root.children[default_path]._add_child_impl(subpath, child)
-            child.has_known_prefix = c.has_known_prefix and child.has_known_prefix
-            # print 'Added %r' % c
-
-        # print 'Adding child %r to directory %r at %r' % (child, self.path, subpath)
-        c = self._add_child_impl(subpath, child)
-        # print 'Added %r' % c
-        return c
-
-    def _add_child_impl(self, subpath, child):
-        # print '%d, %d. Adding child (recursive): %s %s' % (self.dir_id, child.dir_id, repr(self.path), repr(subpath))
-        if len(subpath) == 0:
-            self.has_known_prefix = self.has_known_prefix and child.has_known_prefix
-            # print '%d, %d. Setting child: %d' % (self.dir_id, child.dir_id, self.has_known_prefix)
-            self._merge_children(child)
-
-            return self
-        else:
-            if not subpath[0] in self.children:
-                # print '%d, %d. Path %s was absent (%s)' % (self.dir_id, child.dir_id, repr(self.path + subpath[0:1]), repr(self.children))
-                subdir = DirListEntry(True, True, path=self.path + subpath[0:1], root=self.root)
-                subdir.has_known_prefix = len(subpath) == 1
-                self.children[subpath[0]] = subdir
-            else:
-                subdir = self.children[subpath[0]]
-                subdir.has_known_prefix = False
-                # print '%d, %d. Path was present' % (self.dir_id, child.dir_id)
-
-            return subdir._add_child_impl(subpath[1:], child)
-
-    def _merge_children(self, other):
-        for c in other.children:
-            if c not in self.children:
-                self.children[c] = other.children[c]
-            else:
-                self.children[c].has_known_prefix = self.children[c].has_known_prefix and other.children[c].has_known_prefix
-                self.children[c]._merge_children(other.children[c])
-
+DEFAULT_DIRECTORY_PREFIX = b'default'
+DIRECTORY_ERROR_STRING = b'DIRECTORY_ERROR'
 
 def setup_directories(instructions, default_path, random):
-    dir_list = [DirListEntry(True, False, True)]
-    instructions.push_args(0, '\xfe')
-    instructions.append('DIRECTORY_CREATE_SUBSPACE')
-    dir_list.append(DirListEntry(False, True))
+    # Clients start with the default directory layer in the directory list
+    DirectoryStateTreeNode.reset()
+    dir_list = [DirectoryStateTreeNode.get_layer(b'\xfe')]
 
-    instructions.push_args(0, '')
+    instructions.push_args(0, b'\xfe')
     instructions.append('DIRECTORY_CREATE_SUBSPACE')
-    dir_list.append(DirListEntry(False, True))
+    dir_list.append(DirectoryStateTreeNode(False, True))
+
+    instructions.push_args(0, b'')
+    instructions.append('DIRECTORY_CREATE_SUBSPACE')
+    dir_list.append(DirectoryStateTreeNode(False, True))
 
     instructions.push_args(1, 2, 1)
     instructions.append('DIRECTORY_CREATE_LAYER')
-    dir_list.append(DirListEntry(True, False, True))
+    dir_list.append(DirectoryStateTreeNode.get_layer(b'\xfe'))
 
     create_default_directory_subspace(instructions, default_path, random)
-    dir_list.append(DirListEntry(True, True, True))
+    dir_list.append(dir_list[0].add_child((default_path,), DirectoryStateTreeNode(True, True, has_known_prefix=True)))
+    DirectoryStateTreeNode.set_default_directory(dir_list[-1])
 
     instructions.push_args(DEFAULT_DIRECTORY_INDEX)
     instructions.append('DIRECTORY_SET_ERROR_INDEX')
@@ -122,7 +67,7 @@ def create_default_directory_subspace(instructions, path, random):
     instructions.push_args(3)
     instructions.append('DIRECTORY_CHANGE')
     prefix = random.random_string(16)
-    instructions.push_args(1, path, '', '%s-%s' % (DEFAULT_DIRECTORY_PREFIX, prefix))
+    instructions.push_args(1, path, b'', b'%s-%s' % (DEFAULT_DIRECTORY_PREFIX, prefix))
     instructions.append('DIRECTORY_CREATE_DATABASE')
 
     instructions.push_args(DEFAULT_DIRECTORY_INDEX)
@@ -143,14 +88,14 @@ def push_instruction_and_record_prefix(instructions, op, op_args, path, dir_inde
         instructions.push_args(dir_index)
         instructions.append('DIRECTORY_CHANGE')
 
-        instructions.push_args(1, '', random.random_string(16), '')
+        instructions.push_args(1, b'', random.random_string(16), b'')
         instructions.append('DIRECTORY_PACK_KEY')
         test_util.to_front(instructions, 3)  # move the existence result up to the front of the stack
 
         t = util.subspace_to_tuple(subspace)
         instructions.push_args(len(t) + 3, *t)
 
-        instructions.append('TUPLE_PACK')  # subspace[<exists>][<packed_key>][random.random_string(16)] = ''
+        instructions.append('TUPLE_PACK')  # subspace[<exists>][<packed_key>][random.random_string(16)] = b''
         instructions.append('SET')
 
         instructions.push_args(DEFAULT_DIRECTORY_INDEX)
@@ -183,7 +128,7 @@ def check_for_duplicate_prefixes(db, subspace):
 
 
 def validate_hca_state(db):
-    hca = fdb.Subspace(('\xfe', 'hca'), '\xfe')
+    hca = fdb.Subspace((b'\xfe', b'hca'), b'\xfe')
     counters = hca[0]
     recent = hca[1]
 

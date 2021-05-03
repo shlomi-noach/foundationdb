@@ -18,41 +18,60 @@
  * limitations under the License.
  */
 
-#include "workloads.h"
+#include "fdbserver/workloads/workloads.actor.h"
 #include "flow/UnitTest.h"
+#include "flow/actorcompiler.h" // has to be last include
 
 void forceLinkIndexedSetTests();
 void forceLinkDequeTests();
 void forceLinkFlowTests();
+void forceLinkVersionedMapTests();
+void forceLinkMemcpyTests();
+void forceLinkMemcpyPerfTests();
+void forceLinkSimExternalConnectionTests();
 
 struct UnitTestWorkload : TestWorkload {
 	bool enabled;
 	std::string testPattern;
 	int testRunLimit;
+	UnitTestParameters testParams;
 
 	PerfIntCounter testsAvailable, testsExecuted, testsFailed;
 	PerfDoubleCounter totalWallTime, totalSimTime;
 
 	UnitTestWorkload(WorkloadContext const& wcx)
-		: TestWorkload(wcx), testsAvailable("Test Cases Available"), testsExecuted("Test Cases Executed"), testsFailed("Test Cases Failed"), totalWallTime("Total wall clock time (s)"), totalSimTime("Total flow time (s)")
-	{
+	  : TestWorkload(wcx), testsAvailable("Test Cases Available"), testsExecuted("Test Cases Executed"),
+	    testsFailed("Test Cases Failed"), totalWallTime("Total wall clock time (s)"),
+	    totalSimTime("Total flow time (s)") {
 		enabled = !clientId; // only do this on the "first" client
 		testPattern = getOption(options, LiteralStringRef("testsMatching"), Value()).toString();
 		testRunLimit = getOption(options, LiteralStringRef("maxTestCases"), -1);
+
+		// Consume all remaining options as testParams which the unit test can access
+		for (auto& kv : options) {
+			if (kv.value.size() != 0) {
+				testParams.set(kv.key.toString(), getOption(options, kv.key, StringRef()).toString());
+			}
+		}
+
 		forceLinkIndexedSetTests();
 		forceLinkDequeTests();
 		forceLinkFlowTests();
+		forceLinkVersionedMapTests();
+		forceLinkMemcpyTests();
+		forceLinkMemcpyPerfTests();
+		forceLinkSimExternalConnectionTests();
 	}
 
-	virtual std::string description() { return "UnitTests"; }
-	virtual Future<Void> setup(Database const& cx) { return Void(); }
-	virtual Future<Void> start(Database const& cx) {
+	std::string description() const override { return "UnitTests"; }
+	Future<Void> setup(Database const& cx) override { return Void(); }
+	Future<Void> start(Database const& cx) override {
 		if (enabled)
 			return runUnitTests(this);
 		return Void();
 	}
-	virtual Future<bool> check(Database const& cx) { return testsFailed.getValue() == 0; }
-	virtual void getMetrics(vector<PerfMetric>& m) {
+	Future<bool> check(Database const& cx) override { return testsFailed.getValue() == 0; }
+	void getMetrics(vector<PerfMetric>& m) override {
 		m.push_back(testsAvailable.getMetric());
 		m.push_back(testsExecuted.getMetric());
 		m.push_back(testsFailed.getMetric());
@@ -62,22 +81,21 @@ struct UnitTestWorkload : TestWorkload {
 
 	ACTOR static Future<Void> runUnitTests(UnitTestWorkload* self) {
 		state std::vector<UnitTest*> tests;
-		state int allTestCount = 0;
 
-		for (auto t = g_unittests.tests; t != NULL; t = t->next) {
-			if (StringRef(t->name).startsWith(self->testPattern)) {
+		for (auto test = g_unittests.tests; test != nullptr; test = test->next) {
+			if (StringRef(test->name).startsWith(self->testPattern)) {
 				++self->testsAvailable;
-				tests.push_back(t);
+				tests.push_back(test);
 			}
 		}
 		fprintf(stdout, "Found %zu tests\n", tests.size());
-		g_random->randomShuffle(tests);
-		if (self->testRunLimit > 0 && tests.size() > self->testRunLimit) 
+		deterministicRandom()->randomShuffle(tests);
+		if (self->testRunLimit > 0 && tests.size() > self->testRunLimit)
 			tests.resize(self->testRunLimit);
 
 		state std::vector<UnitTest*>::iterator t;
 		for (t = tests.begin(); t != tests.end(); ++t) {
-			auto test = *t;
+			state UnitTest* test = *t;
 			printf("Testing %s\n", test->name);
 
 			state Error result = success();
@@ -85,9 +103,8 @@ struct UnitTestWorkload : TestWorkload {
 			state double start_timer = timer();
 
 			try {
-				Void _ = wait(test->func());
-			}
-			catch (Error& e) {
+				wait(test->func(self->testParams));
+			} catch (Error& e) {
 				++self->testsFailed;
 				result = e;
 			}
@@ -97,14 +114,13 @@ struct UnitTestWorkload : TestWorkload {
 
 			self->totalWallTime += wallTime;
 			self->totalSimTime += simTime;
-
-			auto test = *t;
 			TraceEvent(result.code() != error_code_success ? SevError : SevInfo, "UnitTest")
-				.detail("Name", test->name)
-				.detail("File", test->file).detail("Line", test->line)
-				.error(result, true)
-				.detail("WallTime", wallTime)
-				.detail("FlowTime", simTime);
+			    .error(result, true)
+			    .detail("Name", test->name)
+			    .detail("File", test->file)
+			    .detail("Line", test->line)
+			    .detail("WallTime", wallTime)
+			    .detail("FlowTime", simTime);
 		}
 
 		return Void();
@@ -113,7 +129,7 @@ struct UnitTestWorkload : TestWorkload {
 
 WorkloadFactory<UnitTestWorkload> UnitTestWorkloadFactory("UnitTests");
 
-TEST_CASE("fdbserver/UnitTestWorkload/long delay") {
-	Void _ = wait(delay(60));
+TEST_CASE("/fdbserver/UnitTestWorkload/long delay") {
+	wait(delay(60));
 	return Void();
 }

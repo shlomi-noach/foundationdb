@@ -22,65 +22,70 @@
 #define FDBCLIENT_CLIENTWORKERINTERFACE_H
 #pragma once
 
-#include "FDBTypes.h"
+#include "fdbclient/FDBTypes.h"
 #include "fdbrpc/FailureMonitor.h"
-#include "Status.h"
-#include "ClientDBInfo.h"
+#include "fdbclient/Status.h"
+#include "fdbclient/CommitProxyInterface.h"
 
 // Streams from WorkerInterface that are safe and useful to call from a client.
 // A ClientWorkerInterface is embedded as the first element of a WorkerInterface.
 struct ClientWorkerInterface {
-	RequestStream< struct RebootRequest > reboot;
-	RequestStream< struct ProfilerRequest > profiler;
+	constexpr static FileIdentifier file_identifier = 12418152;
+	RequestStream<struct RebootRequest> reboot;
+	RequestStream<struct ProfilerRequest> profiler;
 
-	bool operator == (ClientWorkerInterface const& r) const { return id() == r.id(); }
-	bool operator != (ClientWorkerInterface const& r) const { return id() != r.id(); }
+	bool operator==(ClientWorkerInterface const& r) const { return id() == r.id(); }
+	bool operator!=(ClientWorkerInterface const& r) const { return id() != r.id(); }
 	UID id() const { return reboot.getEndpoint().token; }
-	NetworkAddress address() const { return reboot.getEndpoint().address; }
+	NetworkAddress address() const { return reboot.getEndpoint().getPrimaryAddress(); }
+
+	void initEndpoints() { reboot.getEndpoint(TaskPriority::ReadSocket); }
 
 	template <class Ar>
-	void serialize( Ar& ar ) {
-		ar & reboot & profiler;
+	void serialize(Ar& ar) {
+		serializer(ar, reboot, profiler);
 	}
 };
 
 struct RebootRequest {
+	constexpr static FileIdentifier file_identifier = 11913957;
 	bool deleteData;
 	bool checkData;
+	uint32_t waitForDuration; // seconds
 
-	explicit RebootRequest(bool deleteData = false, bool checkData = false) : deleteData(deleteData), checkData(checkData) {}
+	explicit RebootRequest(bool deleteData = false, bool checkData = false, uint32_t waitForDuration = 0)
+	  : deleteData(deleteData), checkData(checkData), waitForDuration(waitForDuration) {}
 
 	template <class Ar>
 	void serialize(Ar& ar) {
-		ar & deleteData & checkData;
+		serializer(ar, deleteData, checkData, waitForDuration);
 	}
 };
 
 struct ProfilerRequest {
+	constexpr static FileIdentifier file_identifier = 15437862;
 	ReplyPromise<Void> reply;
 
 	enum class Type : std::int8_t {
 		GPROF = 1,
-		FLOW = 2
+		FLOW = 2,
+		GPROF_HEAP = 3,
 	};
 
-	enum class Action : std::int8_t {
-		DISABLE = 0,
-		ENABLE = 1,
-		RUN = 2
-	};
+	enum class Action : std::int8_t { DISABLE = 0, ENABLE = 1, RUN = 2 };
 
 	Type type;
 	Action action;
 	int duration;
 	Standalone<StringRef> outputFile;
 
-	template<class Ar>
-	void serialize( Ar& ar ) {
-		ar & reply & type & action & duration & outputFile;
+	ProfilerRequest() = default;
+	explicit ProfilerRequest(Type t, Action a, int d) : type(t), action(a), duration(d) {}
+
+	template <class Ar>
+	void serialize(Ar& ar) {
+		serializer(ar, reply, type, action, duration, outputFile);
 	}
 };
-BINARY_SERIALIZABLE( ProfilerRequest::Type );
-BINARY_SERIALIZABLE( ProfilerRequest::Action );
 
 #endif

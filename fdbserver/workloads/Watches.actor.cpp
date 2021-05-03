@@ -18,12 +18,12 @@
  * limitations under the License.
  */
 
-#include "flow/actorcompiler.h"
 #include "fdbrpc/ContinuousSample.h"
-#include "fdbclient/NativeAPI.h"
-#include "fdbserver/TesterInterface.h"
+#include "fdbclient/NativeAPI.actor.h"
+#include "fdbserver/TesterInterface.actor.h"
 #include "flow/DeterministicRandom.h"
-#include "workloads.h"
+#include "fdbserver/workloads/workloads.actor.h"
+#include "flow/actorcompiler.h" // This must be the last #include.
 
 const int sampleSize = 10000;
 
@@ -35,138 +35,151 @@ struct WatchesWorkload : TestWorkload {
 	ContinuousSample<double> cycleLatencies;
 	std::vector<int> nodeOrder;
 
-	WatchesWorkload(WorkloadContext const& wcx)
-		: TestWorkload(wcx), cycles("Cycles"), cycleLatencies( sampleSize )
-	{
-		testDuration = getOption( options, LiteralStringRef("testDuration"), 600.0 );
-		nodes = getOption( options, LiteralStringRef("nodeCount"), 100 );
-		extraPerNode = getOption( options, LiteralStringRef("extraPerNode"), 1000 );
-		keyBytes = std::max( getOption( options, LiteralStringRef("keyBytes"), 16 ), 16 );
+	WatchesWorkload(WorkloadContext const& wcx) : TestWorkload(wcx), cycles("Cycles"), cycleLatencies(sampleSize) {
+		testDuration = getOption(options, LiteralStringRef("testDuration"), 600.0);
+		nodes = getOption(options, LiteralStringRef("nodeCount"), 100);
+		extraPerNode = getOption(options, LiteralStringRef("extraPerNode"), 1000);
+		keyBytes = std::max(getOption(options, LiteralStringRef("keyBytes"), 16), 16);
 
-		for(int i=0; i<nodes+1; i++)
+		for (int i = 0; i < nodes + 1; i++)
 			nodeOrder.push_back(i);
 		DeterministicRandom tempRand(1);
-		tempRand.randomShuffle( nodeOrder );
+		tempRand.randomShuffle(nodeOrder);
 	}
 
-	virtual std::string description() { return "Watches"; }
+	std::string description() const override { return "Watches"; }
 
-	virtual Future<Void> setup( Database const& cx ) {
-		return _setup(cx, this);
-	}
+	Future<Void> setup(Database const& cx) override { return _setup(cx, this); }
 
-	virtual Future<Void> start( Database const& cx ) {
-		if( clientId == 0 )
-			return watchesWorker( cx, this );
+	Future<Void> start(Database const& cx) override {
+		if (clientId == 0)
+			return watchesWorker(cx, this);
 		return Void();
 	}
 
-	virtual Future<bool> check( Database const& cx ) {
+	Future<bool> check(Database const& cx) override {
 		bool ok = true;
-		for( int i = 0; i < clients.size(); i++ )
-			if( clients[i].isError() )
+		for (int i = 0; i < clients.size(); i++)
+			if (clients[i].isError())
 				ok = false;
 		clients.clear();
 		return ok;
 	}
 
-	virtual void getMetrics( vector<PerfMetric>& m ) {
-		if( clientId == 0 ) {
-			m.push_back( cycles.getMetric() );
-			m.push_back( PerfMetric( "Mean Latency (ms)", 1000 * cycleLatencies.mean() / nodes, true ) );
+	void getMetrics(vector<PerfMetric>& m) override {
+		if (clientId == 0) {
+			m.push_back(cycles.getMetric());
+			m.push_back(PerfMetric("Mean Latency (ms)", 1000 * cycleLatencies.mean() / nodes, true));
 		}
 	}
 
-	Key keyForIndex( uint64_t index ) {
-		Key result = makeString( keyBytes );
-		uint8_t* data = mutateString( result );
+	Key keyForIndex(uint64_t index) {
+		Key result = makeString(keyBytes);
+		uint8_t* data = mutateString(result);
 		memset(data, '.', keyBytes);
 
 		double d = double(index) / nodes;
-		emplaceIndex( data, 0, *(int64_t*)&d );
+		emplaceIndex(data, 0, *(int64_t*)&d);
 
 		return result;
 	}
 
-	ACTOR Future<Void> _setup( Database cx, WatchesWorkload* self) {
+	ACTOR Future<Void> _setup(Database cx, WatchesWorkload* self) {
 		vector<Future<Void>> setupActors;
-		for(int i=0; i<self->nodes; i++)
-			if( i % self->clientCount == self->clientId )
-				setupActors.push_back( self->watcherInit( cx, self->keyForIndex(self->nodeOrder[i]), self->keyForIndex(self->nodeOrder[i+1]), self->extraPerNode ) );
+		for (int i = 0; i < self->nodes; i++)
+			if (i % self->clientCount == self->clientId)
+				setupActors.push_back(self->watcherInit(cx,
+				                                        self->keyForIndex(self->nodeOrder[i]),
+				                                        self->keyForIndex(self->nodeOrder[i + 1]),
+				                                        self->extraPerNode));
 
-		Void _ = wait( waitForAll( setupActors ) );
-		
-		for(int i=0; i<self->nodes; i++)
-			if( i % self->clientCount == self->clientId )
-				self->clients.push_back( self->watcher( cx, self->keyForIndex(self->nodeOrder[i]), self->keyForIndex(self->nodeOrder[i+1]), self->extraPerNode ) );
-		
+		wait(waitForAll(setupActors));
+
+		for (int i = 0; i < self->nodes; i++)
+			if (i % self->clientCount == self->clientId)
+				self->clients.push_back(self->watcher(cx,
+				                                      self->keyForIndex(self->nodeOrder[i]),
+				                                      self->keyForIndex(self->nodeOrder[i + 1]),
+				                                      self->extraPerNode));
+
 		return Void();
 	}
 
-	ACTOR static Future<Void> watcherInit( Database cx, Key watchKey, Key setKey, int extraNodes ) {
-		state Transaction tr( cx );
+	ACTOR static Future<Void> watcherInit(Database cx, Key watchKey, Key setKey, int extraNodes) {
+		state Transaction tr(cx);
 		state int extraLoc = 0;
-		while( extraLoc < extraNodes ) {
+		while (extraLoc < extraNodes) {
 			try {
-				for( int i = 0; i < 1000 && extraLoc+i < extraNodes; i++ ) {
-					Key extraKey = KeyRef(watchKey.toString() + format( "%d", extraLoc+i ));
-					Value extraValue = ValueRef(std::string( 100, '.' ));
+				for (int i = 0; i < 1000 && extraLoc + i < extraNodes; i++) {
+					Key extraKey = KeyRef(watchKey.toString() + format("%d", extraLoc + i));
+					Value extraValue = ValueRef(std::string(100, '.'));
 					tr.set(extraKey, extraValue);
-					//TraceEvent("watcherInitialSetupExtra").detail("key", printable(extraKey)).detail("value", printable(extraValue));
+					//TraceEvent("WatcherInitialSetupExtra").detail("Key", printable(extraKey)).detail("Value", printable(extraValue));
 				}
-				Void _ = wait( tr.commit() );
+				wait(tr.commit());
 				extraLoc += 1000;
-				//TraceEvent("watcherInitialSetup").detail("watch", printable(watchKey)).detail("ver", tr.getCommittedVersion());
-			} catch( Error &e ) {
-				//TraceEvent("watcherInitialSetupError").detail("ExtraLoc", extraLoc).error(e);
-				Void _ = wait( tr.onError(e) );
+				//TraceEvent("WatcherInitialSetup").detail("Watch", printable(watchKey)).detail("Ver", tr.getCommittedVersion());
+			} catch (Error& e) {
+				//TraceEvent("WatcherInitialSetupError").error(e).detail("ExtraLoc", extraLoc);
+				wait(tr.onError(e));
 			}
 		}
 		return Void();
 	}
 
-	ACTOR static Future<Void> watcher( Database cx, Key watchKey, Key setKey, int extraNodes ) {
+	ACTOR static Future<Void> watcher(Database cx, Key watchKey, Key setKey, int extraNodes) {
 		state Optional<Optional<Value>> lastValue;
 
 		loop {
-			state Transaction tr( cx );
 			loop {
+				state std::unique_ptr<Transaction> tr = std::make_unique<Transaction>(cx);
 				try {
-					state Future<Optional<Value>> setValueFuture = tr.get( setKey );
-					state Optional<Value> watchValue = wait( tr.get( watchKey ) );
-					Optional<Value> setValue = wait( setValueFuture );
-					
-					if( lastValue.present() && lastValue.get() == watchValue) {
-						TraceEvent(SevError, "watcherTriggeredWithoutChanging").detail("watchKey", printable( watchKey )).detail("setKey", printable( setKey )).detail("watchValue", printable( watchValue )).detail("setValue", printable( setValue )).detail("readVersion", tr.getReadVersion().get());
+					state Future<Optional<Value>> setValueFuture = tr->get(setKey);
+					state Optional<Value> watchValue = wait(tr->get(watchKey));
+					Optional<Value> setValue = wait(setValueFuture);
+
+					if (lastValue.present() && lastValue.get() == watchValue) {
+						TraceEvent(SevError, "WatcherTriggeredWithoutChanging")
+						    .detail("WatchKey", printable(watchKey))
+						    .detail("SetKey", printable(setKey))
+						    .detail("WatchValue", printable(watchValue))
+						    .detail("SetValue", printable(setValue))
+						    .detail("ReadVersion", tr->getReadVersion().get());
 					}
 
 					lastValue = Optional<Optional<Value>>();
 
-					if( watchValue != setValue ) {
-						if( watchValue.present() )
-							tr.set( setKey, watchValue.get() );
+					if (watchValue != setValue) {
+						if (watchValue.present())
+							tr->set(setKey, watchValue.get());
 						else
-							tr.clear( setKey );
-						//TraceEvent("watcherSetStart").detail("watch", printable(watchKey)).detail("set", printable(setKey)).detail("value", printable( watchValue ) );
-						Void _ = wait( tr.commit() );
-						//TraceEvent("watcherSetFinish").detail("watch", printable(watchKey)).detail("set", printable(setKey)).detail("value", printable( watchValue ) ).detail("ver", tr.getCommittedVersion());
+							tr->clear(setKey);
+						//TraceEvent("WatcherSetStart").detail("Watch", printable(watchKey)).detail("Set", printable(setKey)).detail("Value", printable( watchValue ) );
+						wait(tr->commit());
+						//TraceEvent("WatcherSetFinish").detail("Watch", printable(watchKey)).detail("Set", printable(setKey)).detail("Value", printable( watchValue ) ).detail("Ver", tr->getCommittedVersion());
 					} else {
-						//TraceEvent("watcherWatch").detail("watch", printable(watchKey));
-						state Future<Void> watchFuture = tr.watch( Reference<Watch>( new Watch(watchKey, watchValue) ) );
-						Void _ = wait( tr.commit() );
-						Void _ = wait( watchFuture );
-						if( watchValue.present() )
+						//TraceEvent("WatcherWatch").detail("Watch", printable(watchKey));
+						state Future<Void> watchFuture = tr->watch(makeReference<Watch>(watchKey, watchValue));
+						wait(tr->commit());
+						if (BUGGIFY) {
+							// Make watch future outlive transaction
+							tr.reset();
+						}
+						wait(watchFuture);
+						if (watchValue.present())
 							lastValue = watchValue;
 					}
 					break;
-				} catch( Error &e ) {
-					Void _ = wait( tr.onError(e) );
+				} catch (Error& e) {
+					if (tr != nullptr) {
+						wait(tr->onError(e));
+					}
 				}
 			}
 		}
 	}
 
-	ACTOR static Future<Void> watchesWorker( Database cx, WatchesWorkload* self ) {
+	ACTOR static Future<Void> watchesWorker(Database cx, WatchesWorkload* self) {
 		state Key startKey = self->keyForIndex(self->nodeOrder[0]);
 		state Key endKey = self->keyForIndex(self->nodeOrder[self->nodes]);
 		state Optional<Value> expectedValue;
@@ -174,72 +187,76 @@ struct WatchesWorkload : TestWorkload {
 		state double startTime = now();
 		state double chainStartTime;
 		loop {
-			state Transaction tr( cx );
-			state bool isValue = g_random->random01() > 0.5;
-			state Value assignedValue = Value( g_random->randomUniqueID().toString() );
+			state Transaction tr(cx);
+			state bool isValue = deterministicRandom()->random01() > 0.5;
+			state Value assignedValue = Value(deterministicRandom()->randomUniqueID().toString());
 			state bool firstAttempt = true;
 			loop {
 				try {
-					state Version readVer = wait( tr.getReadVersion() );
-					Optional<Value> _startValue = wait( tr.get( startKey ) );
-					if( firstAttempt ) {
+					wait(success(tr.getReadVersion()));
+					Optional<Value> _startValue = wait(tr.get(startKey));
+					if (firstAttempt) {
 						startValue = _startValue;
 						firstAttempt = false;
 					}
 					expectedValue = Optional<Value>();
-					if( startValue.present() ) {
-						if( isValue )
+					if (startValue.present()) {
+						if (isValue)
 							expectedValue = assignedValue;
 					} else
 						expectedValue = assignedValue;
 
-					if( expectedValue.present() )
-						tr.set( startKey, expectedValue.get() );
+					if (expectedValue.present())
+						tr.set(startKey, expectedValue.get());
 					else
-						tr.clear( startKey );
+						tr.clear(startKey);
 
-					Void _ = wait( tr.commit() );
-					//TraceEvent("watcherInitialSet").detail("start", printable(startKey)).detail("end", printable(endKey)).detail("value", printable( expectedValue ) ).detail("ver", tr.getCommittedVersion()).detail("readVer", readVer);
+					wait(tr.commit());
 					break;
-				} catch( Error &e ) {
-					Void _ = wait( tr.onError(e) );
+				} catch (Error& e) {
+					wait(tr.onError(e));
 				}
 			}
 
 			chainStartTime = now();
 			firstAttempt = true;
 			loop {
-				state Transaction tr2( cx );
+				state Transaction tr2(cx);
 				state bool finished = false;
 				loop {
 					try {
-						state Optional<Value> endValue = wait( tr2.get( endKey ) );
-						if( endValue == expectedValue ) {
+						state Optional<Value> endValue = wait(tr2.get(endKey));
+						if (endValue == expectedValue) {
 							finished = true;
 							break;
 						}
-						if( !firstAttempt || endValue != startValue ) {
-							TraceEvent(SevError, "watcherError").detail("firstAttempt", firstAttempt).detail("startValue", printable( startValue )).detail("endValue", printable( endValue )).detail("expectedValue", printable(expectedValue)).detail("endVersion", tr2.getReadVersion().get()); 
+						if (!firstAttempt || endValue != startValue) {
+							TraceEvent(SevError, "WatcherError")
+							    .detail("FirstAttempt", firstAttempt)
+							    .detail("StartValue", printable(startValue))
+							    .detail("EndValue", printable(endValue))
+							    .detail("ExpectedValue", printable(expectedValue))
+							    .detail("EndVersion", tr2.getReadVersion().get());
 						}
-						state Future<Void> watchFuture = tr2.watch( Reference<Watch>( new Watch(endKey, startValue) ) );
-						Void _ = wait( tr2.commit() );
-						Void _ = wait( watchFuture );
+						state Future<Void> watchFuture = tr2.watch(makeReference<Watch>(endKey, startValue));
+						wait(tr2.commit());
+						wait(watchFuture);
 						firstAttempt = false;
 						break;
-					} catch( Error &e ) {
-						Void _ = wait( tr2.onError(e) );
+					} catch (Error& e) {
+						wait(tr2.onError(e));
 					}
 				}
-				if( finished )
+				if (finished)
 					break;
 			}
 			self->cycleLatencies.addSample(now() - chainStartTime);
 			++self->cycles;
 
-			if( g_network->isSimulated() )
-				Void _ = wait( delay( g_random->random01() < 0.5 ? 0 : g_random->random01() * 60 ) );
+			if (g_network->isSimulated())
+				wait(delay(deterministicRandom()->random01() < 0.5 ? 0 : deterministicRandom()->random01() * 60));
 
-			if( now() - startTime > self->testDuration )
+			if (now() - startTime > self->testDuration)
 				break;
 		}
 		return Void();

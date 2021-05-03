@@ -40,6 +40,7 @@ class ApiTest(Test):
         self.stack_subspace = self.subspace['stack']
 
         self.versionstamped_values = self.scratch['versionstamped_values']
+        self.versionstamped_values_2 = self.scratch['versionstamped_values_2']
         self.versionstamped_keys = self.scratch['versionstamped_keys']
 
     def setup(self, args):
@@ -56,6 +57,7 @@ class ApiTest(Test):
         self.generated_keys = []
         self.outstanding_ops = []
         self.random = test_util.RandomGenerator(args.max_int_bits, args.api_version, args.types)
+        self.api_version = args.api_version
 
     def add_stack_items(self, num):
         self.stack_size += num
@@ -154,6 +156,8 @@ class ApiTest(Test):
         resets = ['ON_ERROR', 'RESET', 'CANCEL']
         read_conflicts = ['READ_CONFLICT_RANGE', 'READ_CONFLICT_KEY']
         write_conflicts = ['WRITE_CONFLICT_RANGE', 'WRITE_CONFLICT_KEY', 'DISABLE_WRITE_CONFLICT']
+        txn_sizes = ['GET_APPROXIMATE_SIZE']
+        storage_metrics = ['GET_ESTIMATED_RANGE_SIZE', 'GET_RANGE_SPLIT_POINTS']
 
         op_choices += reads
         op_choices += mutations
@@ -166,9 +170,11 @@ class ApiTest(Test):
         op_choices += read_conflicts
         op_choices += write_conflicts
         op_choices += resets
+        op_choices += txn_sizes
+        op_choices += storage_metrics
 
-        idempotent_atomic_ops = [u'BIT_AND', u'BIT_OR', u'MAX', u'MIN', u'BYTE_MIN', u'BYTE_MAX']
-        atomic_ops = idempotent_atomic_ops + [u'ADD', u'BIT_XOR', u'APPEND_IF_FITS']
+        idempotent_atomic_ops = ['BIT_AND', 'BIT_OR', 'MAX', 'MIN', 'BYTE_MIN', 'BYTE_MAX']
+        atomic_ops = idempotent_atomic_ops + ['ADD', 'BIT_XOR', 'APPEND_IF_FITS']
 
         if args.concurrency > 1:
             self.max_keys = random.randint(100, 1000)
@@ -349,17 +355,30 @@ class ApiTest(Test):
             elif op == 'VERSIONSTAMP':
                 rand_str1 = self.random.random_string(100)
                 key1 = self.versionstamped_values.pack((rand_str1,))
+                key2 = self.versionstamped_values_2.pack((rand_str1,))
 
                 split = random.randint(0, 70)
-                rand_str2 = self.random.random_string(20 + split) + fdb.tuple.Versionstamp._UNSET_TR_VERSION + self.random.random_string(70 - split)
-                key2 = self.versionstamped_keys.pack() + rand_str2
-                index = key2.find(fdb.tuple.Versionstamp._UNSET_TR_VERSION)
-                key2 += chr(index % 256) + chr(index / 256)
+                prefix = self.random.random_string(20 + split)
+                if prefix.endswith(b'\xff'):
+                    # Necessary to make sure that the SET_VERSIONSTAMPED_VALUE check
+                    # correctly finds where the version is supposed to fit in.
+                    prefix += b'\x00'
+                suffix = self.random.random_string(70 - split)
+                rand_str2 = prefix + fdb.tuple.Versionstamp._UNSET_TR_VERSION + suffix
+                key3 = self.versionstamped_keys.pack() + rand_str2
+                index = len(self.versionstamped_keys.pack()) + len(prefix)
+                key3 = self.versionstamp_key(key3, index)
 
-                instructions.push_args(u'SET_VERSIONSTAMPED_VALUE', key1, fdb.tuple.Versionstamp._UNSET_TR_VERSION + rand_str2)
+                instructions.push_args('SET_VERSIONSTAMPED_VALUE',
+                                       key1,
+                                       self.versionstamp_value(fdb.tuple.Versionstamp._UNSET_TR_VERSION + rand_str2))
                 instructions.append('ATOMIC_OP')
 
-                instructions.push_args(u'SET_VERSIONSTAMPED_KEY', key2, rand_str1)
+                if args.api_version >= 520:
+                    instructions.push_args('SET_VERSIONSTAMPED_VALUE', key2, self.versionstamp_value(rand_str2, len(prefix)))
+                    instructions.append('ATOMIC_OP')
+
+                instructions.push_args('SET_VERSIONSTAMPED_KEY', key3, rand_str1)
                 instructions.append('ATOMIC_OP')
                 self.can_use_key_selectors = False
 
@@ -419,6 +438,10 @@ class ApiTest(Test):
                         self.can_set_version = True
                         self.can_use_key_selectors = True
 
+            elif op == 'GET_APPROXIMATE_SIZE':
+                instructions.append(op)
+                self.add_strings(1)
+
             elif op == 'TUPLE_PACK' or op == 'TUPLE_RANGE':
                 tup = self.random.random_tuple(10)
                 instructions.push_args(len(tup), *tup)
@@ -430,27 +453,34 @@ class ApiTest(Test):
 
             elif op == 'TUPLE_PACK_WITH_VERSIONSTAMP':
                 tup = (self.random.random_string(20),) + self.random.random_tuple(10, incomplete_versionstamps=True)
-                instructions.push_args(self.versionstamped_keys.pack(), len(tup), *tup)
+                prefix = self.versionstamped_keys.pack()
+                instructions.push_args(prefix, len(tup), *tup)
                 instructions.append(op)
                 self.add_strings(1)
 
-                version_key = self.versionstamped_keys.pack(tup)
-                first_incomplete = version_key.find(fdb.tuple.Versionstamp._UNSET_TR_VERSION)
+                versionstamp_param = prefix + fdb.tuple.pack(tup)
+                first_incomplete = versionstamp_param.find(fdb.tuple.Versionstamp._UNSET_TR_VERSION)
                 second_incomplete = -1 if first_incomplete < 0 else \
-                    version_key.find(fdb.tuple.Versionstamp._UNSET_TR_VERSION, first_incomplete + len(fdb.tuple.Versionstamp._UNSET_TR_VERSION) + 1)
+                    versionstamp_param.find(fdb.tuple.Versionstamp._UNSET_TR_VERSION, first_incomplete + len(fdb.tuple.Versionstamp._UNSET_TR_VERSION) + 1)
 
-                # If there is exactly one incomplete versionstamp, perform the versionstamped key operation.
+                # If there is exactly one incomplete versionstamp, perform the versionstamp operation.
                 if first_incomplete >= 0 and second_incomplete < 0:
                     rand_str = self.random.random_string(100)
 
                     instructions.push_args(rand_str)
                     test_util.to_front(instructions, 1)
-                    instructions.push_args(u'SET_VERSIONSTAMPED_KEY')
+                    instructions.push_args('SET_VERSIONSTAMPED_KEY')
                     instructions.append('ATOMIC_OP')
 
+                    if self.api_version >= 520:
+                        version_value_key_2 = self.versionstamped_values_2.pack((rand_str,))
+                        versionstamped_value = self.versionstamp_value(fdb.tuple.pack(tup), first_incomplete - len(prefix))
+                        instructions.push_args('SET_VERSIONSTAMPED_VALUE', version_value_key_2, versionstamped_value)
+                        instructions.append('ATOMIC_OP')
+
                     version_value_key = self.versionstamped_values.pack((rand_str,))
-                    instructions.push_args(u'SET_VERSIONSTAMPED_VALUE', version_value_key,
-                                           fdb.tuple.Versionstamp._UNSET_TR_VERSION + fdb.tuple.pack(tup))
+                    instructions.push_args('SET_VERSIONSTAMPED_VALUE', version_value_key,
+                                           self.versionstamp_value(fdb.tuple.Versionstamp._UNSET_TR_VERSION + fdb.tuple.pack(tup)))
                     instructions.append('ATOMIC_OP')
                     self.can_use_key_selectors = False
 
@@ -472,8 +502,8 @@ class ApiTest(Test):
 
             # Use SUB to test if integers are correctly unpacked
             elif op == 'SUB':
-                a = self.random.random_int() / 2
-                b = self.random.random_int() / 2
+                a = self.random.random_int() // 2
+                b = self.random.random_int() // 2
                 instructions.push_args(0, a, b)
                 instructions.append(op)
                 instructions.push_args(1)
@@ -508,9 +538,41 @@ class ApiTest(Test):
                 instructions.push_args(d)
                 instructions.append(op)
                 self.add_strings(1)
+            elif op == 'GET_ESTIMATED_RANGE_SIZE':
+                # Protect against inverted range and identical keys
+                key1 = self.workspace.pack(self.random.random_tuple(1))
+                key2 = self.workspace.pack(self.random.random_tuple(1))
+
+                while key1 == key2:
+                    key1 = self.workspace.pack(self.random.random_tuple(1))
+                    key2 = self.workspace.pack(self.random.random_tuple(1))
+
+                if key1 > key2:
+                    key1, key2 = key2, key1
+
+                instructions.push_args(key1, key2)
+                instructions.append(op)
+                self.add_strings(1)
+            elif op == 'GET_RANGE_SPLIT_POINTS':
+                # Protect against inverted range and identical keys
+                key1 = self.workspace.pack(self.random.random_tuple(1))
+                key2 = self.workspace.pack(self.random.random_tuple(1))
+
+                while key1 == key2:
+                    key1 = self.workspace.pack(self.random.random_tuple(1))
+                    key2 = self.workspace.pack(self.random.random_tuple(1))
+
+                if key1 > key2:
+                    key1, key2 = key2, key1
+
+                # TODO: randomize chunkSize but should not exceed 100M(shard limit)
+                chunkSize = 10000000 # 10M
+                instructions.push_args(key1, key2, chunkSize)
+                instructions.append(op)
+                self.add_strings(1)
 
             else:
-                assert False
+                assert False, 'Unknown operation: ' + op
 
             if read_performed and op not in database_reads:
                 self.outstanding_ops.append((self.stack_size, len(instructions) - 1))
@@ -538,13 +600,22 @@ class ApiTest(Test):
         next_begin = None
         incorrect_versionstamps = 0
         for k, v in tr.get_range(begin_key, self.versionstamped_values.range().stop, limit=limit):
-            next_begin = k + '\x00'
-            tup = fdb.tuple.unpack(k)
-            key = self.versionstamped_keys.pack() + v[10:].replace(fdb.tuple.Versionstamp._UNSET_TR_VERSION, v[:10], 1)
-            if tr[key] != tup[-1]:
+            next_begin = k + b'\x00'
+            random_id = self.versionstamped_values.unpack(k)[0]
+            versioned_value = v[10:].replace(fdb.tuple.Versionstamp._UNSET_TR_VERSION, v[:10], 1)
+
+            versioned_key = self.versionstamped_keys.pack() + versioned_value
+            if tr[versioned_key] != random_id:
                 util.get_logger().error('  INCORRECT VERSIONSTAMP:')
-                util.get_logger().error('    %s != %s', repr(tr[key]), repr(tup[-1]))
+                util.get_logger().error('    %s != %s', repr(tr[versioned_key]), repr(random_id))
                 incorrect_versionstamps += 1
+
+            if self.api_version >= 520:
+                k2 = self.versionstamped_values_2.pack((random_id,))
+                if tr[k2] != versioned_value:
+                    util.get_logger().error('  INCORRECT VERSIONSTAMP:')
+                    util.get_logger().error('    %s != %s', repr(tr[k2]), repr(versioned_value))
+                    incorrect_versionstamps += 1
 
         return (next_begin, incorrect_versionstamps)
 
@@ -565,6 +636,6 @@ class ApiTest(Test):
 
     def get_result_specifications(self):
         return [
-            ResultSpecification(self.workspace, global_error_filter=[1007, 1021]),
-            ResultSpecification(self.stack_subspace, key_start_index=1, ordering_index=1, global_error_filter=[1007, 1021])
+            ResultSpecification(self.workspace, global_error_filter=[1007, 1009, 1021]),
+            ResultSpecification(self.stack_subspace, key_start_index=1, ordering_index=1, global_error_filter=[1007, 1009, 1021])
         ]

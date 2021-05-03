@@ -20,10 +20,10 @@
 
 package com.apple.foundationdb.tuple;
 
-import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -35,7 +35,8 @@ import com.apple.foundationdb.Transaction;
  *  {@link #printable(byte[])} for debugging non-text keys and values.
  *
  */
-public class ByteArrayUtil {
+public class ByteArrayUtil extends FastByteComparisons {
+	private static final byte[] EMPTY_BYTES = new byte[0];
 
 	/**
 	 * Joins a set of byte arrays into a larger array. The {@code interlude} is placed
@@ -46,36 +47,46 @@ public class ByteArrayUtil {
 	 *  concatenated elements.
 	 * @param parts the pieces to be joined. May be {@code null}, but does not allow
 	 *  for elements in the list to be {@code null}.
-	 *
+	 * 
 	 * @return a newly created concatenation of the input
 	 */
 	public static byte[] join(byte[] interlude, List<byte[]> parts) {
+		return interludeJoin(interlude, parts.toArray(new byte[0][]));
+	}
+	/**
+	 * Joins a set of byte arrays into a larger array. The {@code interlude} is placed
+	 *  between each of the elements, but not at the beginning or end. In the case that
+	 *  the list is empty or {@code null}, a zero-length byte array will be returned.
+	 *
+	 * @param interlude can be {@code null} or zero length. Placed internally between
+	 *  concatenated elements.
+	 * @param parts the pieces to be joined. May be {@code null}, but does not allow
+	 *  for elements in the array to be {@code null}.
+	 *
+	 * @return a newly created concatenation of the input
+	 */
+	public static byte[] interludeJoin(byte[] interlude, byte[][] parts) {
 		if(parts == null)
 			return new byte[0];
-		int partCount = parts.size();
+		int partCount = parts.length;
 		if(partCount == 0)
-			return new byte[0];
+			return EMPTY_BYTES;
 
 		if(interlude == null)
-			interlude = new byte[0];
+			interlude = EMPTY_BYTES;
 
 		int elementTotals = 0;
 		int interludeSize = interlude.length;
-		for(byte[] e : parts) {
-			elementTotals += e.length;
+		for (int i = 0; i < partCount; i++) {
+			elementTotals += parts[i].length;
 		}
-
 		byte[] dest = new byte[(interludeSize * (partCount - 1)) + elementTotals];
-
-		//System.out.println(" interlude -> " + ArrayUtils.printable(interlude));
-
 		int startByte = 0;
 		int index = 0;
-		for(byte[] part : parts) {
-			//System.out.println(" section -> " + ArrayUtils.printable(parts.get(i)));
-			int length = part.length;
+		for (int i = 0; i < partCount; i++) {
+			int length = parts[i].length;
 			if(length > 0) {
-				System.arraycopy(part, 0, dest, startByte, length);
+				System.arraycopy(parts[i], 0, dest, startByte, length);
 				startByte += length;
 			}
 			if(index < partCount - 1 && interludeSize > 0) {
@@ -85,8 +96,6 @@ public class ByteArrayUtil {
 			}
 			index++;
 		}
-
-		//System.out.println(" complete -> " + ArrayUtils.printable(dest));
 		return dest;
 	}
 
@@ -98,7 +107,7 @@ public class ByteArrayUtil {
 	 * @return a newly created concatenation of the input
 	 */
 	public static byte[] join(byte[]... parts) {
-		return join(null, Arrays.asList(parts));
+		return interludeJoin(null, parts);
 	}
 
 	/**
@@ -136,11 +145,7 @@ public class ByteArrayUtil {
 		if(src.length < start + pattern.length)
 			return false;
 
-		for(int i = 0; i < pattern.length; i++)
-			if(pattern[i] != src[start + i])
-				return false;
-
-		return true;
+		return compareTo(src, start, pattern.length, pattern, 0, pattern.length) == 0;
 	}
 
 	/**
@@ -154,7 +159,10 @@ public class ByteArrayUtil {
 	 * @return a newly created array where {@code pattern} replaced with {@code replacement}
 	 */
 	public static byte[] replace(byte[] src, byte[] pattern, byte[] replacement) {
-		return join(replacement, split(src, pattern));
+		if(src == null) {
+			return null;
+		}
+		return replace(src, 0, src.length, pattern, replacement);
 	}
 
 	/**
@@ -171,7 +179,75 @@ public class ByteArrayUtil {
 	 */
 	public static byte[] replace(byte[] src, int offset, int length,
 			byte[] pattern, byte[] replacement) {
-		return join(replacement, split(src, offset, length, pattern));
+		if(offset < 0 || offset > src.length) {
+			throw new IllegalArgumentException("Invalid offset for array pattern replacement");
+		}
+		if(length < 0 || offset + length > src.length) {
+			throw new IllegalArgumentException("Invalid length for array pattern replacement");
+		}
+		if(pattern == null || pattern.length == 0) {
+			return Arrays.copyOfRange(src, offset, offset + length);
+		}
+		ByteBuffer dest;
+		if(replacement == null || replacement.length != pattern.length) {
+			// Array might change size. This is the "tricky" case.
+			int newLength = replace(src, offset, length, pattern, replacement, null);
+			if(newLength != length) {
+				dest = ByteBuffer.allocate(newLength);
+			}
+			else {
+				// If the array size didn't change, as the pattern and replacement lengths
+				// differ, it must be the case that there weren't any occurrences of pattern in src
+				// between offset and offset + length, so we can just return a copy.
+				return Arrays.copyOfRange(src, offset, offset + length);
+			}
+		}
+		else {
+			// No matter what, the array will stay the same size as replacement.length = pattern.length
+			dest = ByteBuffer.allocate(length);
+		}
+		replace(src, offset, length, pattern, replacement, dest);
+		return dest.array();
+	}
+
+	// Replace any occurrences of pattern in src between offset and offset + length with replacement.
+	// The new array is serialized into dest and the new length is returned.
+	static int replace(byte[] src, int offset, int length, byte[] pattern, byte[] replacement, ByteBuffer dest) {
+		if(pattern == null || pattern.length == 0) {
+			if(dest != null) {
+				dest.put(src, offset, length);
+			}
+			return length;
+		}
+		byte patternFirst = pattern[0];
+		int lastPosition = offset;
+		int currentPosition = offset;
+		int newLength = 0;
+		int replacementLength = replacement == null ? 0 : replacement.length;
+
+		while(currentPosition < offset + length) {
+			if(src[currentPosition] == patternFirst && regionEquals(src, currentPosition, pattern)) {
+				if(dest != null) {
+					dest.put(src, lastPosition, currentPosition - lastPosition);
+					if(replacement != null) {
+						dest.put(replacement);
+					}
+				}
+				newLength += currentPosition - lastPosition + replacementLength;
+				currentPosition += pattern.length;
+				lastPosition = currentPosition;
+			}
+			else {
+				currentPosition++;
+			}
+		}
+
+		newLength += currentPosition - lastPosition;
+		if(dest != null) {
+			dest.put(src, lastPosition, currentPosition - lastPosition);
+		}
+
+		return newLength;
 	}
 
 	/**
@@ -203,7 +279,7 @@ public class ByteArrayUtil {
 	 * @return a list of byte arrays from {@code src} now not containing {@code delimiter}
 	 */
 	public static List<byte[]> split(byte[] src, int offset, int length, byte[] delimiter) {
-		List<byte[]> parts = new LinkedList<byte[]>();
+		List<byte[]> parts = new LinkedList<>();
 		int idx = offset;
 		int lastSplitEnd = offset;
 		while(idx <= (offset+length) - delimiter.length) {
@@ -225,14 +301,6 @@ public class ByteArrayUtil {
 		return parts;
 	}
 
-	static int bisectLeft(BigInteger[] arr, BigInteger i) {
-		int n = Arrays.binarySearch(arr, i);
-		if(n >= 0)
-			return n;
-		int ip = (n + 1) * -1;
-		return ip;
-	}
-
 	/**
 	 * Compare byte arrays for equality and ordering purposes. Elements in the array
 	 *  are interpreted and compared as unsigned bytes. Neither parameter
@@ -245,14 +313,14 @@ public class ByteArrayUtil {
 	 *  {@code r}.
 	 */
 	public static int compareUnsigned(byte[] l, byte[] r) {
-		for(int idx = 0; idx < l.length && idx < r.length; ++idx) {
-			if(l[idx] != r[idx]) {
-				return (l[idx] & 0xFF) < (r[idx] & 0xFF) ? -1 : 1;
-			}
-		}
-		if(l.length == r.length)
-			return 0;
-		return l.length < r.length ? -1 : 1;
+		return compareTo(l, 0, l.length, r, 0, r.length);
+	}
+
+	/**
+	 * @return a {@link Comparator} instance which can be used for Java-level sorting of byte arrays.
+	 */
+	public static Comparator<byte[]> comparator(){
+		return FastByteComparisons.comparator();
 	}
 
 	/**
@@ -266,70 +334,11 @@ public class ByteArrayUtil {
 	 * @return {@code true} if {@code array} starts with {@code prefix}
 	 */
 	public static boolean startsWith(byte[] array, byte[] prefix) {
+		// Short Circuit
 		if(array.length < prefix.length) {
 			return false;
 		}
-		for(int i = 0; i < prefix.length; ++i) {
-			if(prefix[i] != array[i]) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	/**
-	 * Scan through an array of bytes to find the first occurrence of a specific value.
-	 *
-	 * @param src array to scan. Must not be {@code null}.
-	 * @param what the value for which to search.
-	 * @param start the index at which to start the search. If this is at or after
-	 *  the end of {@code src}, the result will always be {@code -1}.
-	 * @param end the index one past the last entry at which to search
-	 *
-	 * @return return the location of the first instance of {@code value}, or
-	 *  {@code -1} if not found.
-	 */
-	static int findNext(byte[] src, byte what, int start, int end) {
-		for(int i = start; i < end; i++) {
-			if(src[i] == what)
-				return i;
-		}
-		return -1;
-	}
-
-	/**
-	 * Gets the index of the first element after the next occurrence of the byte sequence [nm]
-	 * @param v the bytes to scan through
-	 * @param n first character to find
-	 * @param m second character to find
-	 * @param start the index at which to start the scan
-	 *
-	 * @return the index after the next occurrence of [nm]
-	 */
-	static int findTerminator(byte[] v, byte n, byte m, int start) {
-		return findTerminator(v, n, m, start, v.length);
-	}
-
-	/**
-	 * Gets the index of the first element after the next occurrence of the byte sequence [nm]
-	 * @param v the bytes to scan through
-	 * @param n first character to find
-	 * @param m second character to find
-	 * @param start the index at which to start the scan
-	 * @param end the index at which to stop the search (exclusive)
-	 *
-	 * @return the index after the next occurrence of [nm]
-	 */
-	static int findTerminator(byte[] v, byte n, byte m, int start, int end) {
-		int pos = start;
-		while(true) {
-			pos = findNext(v, n, pos, end);
-			if(pos < 0)
-				return end;
-			if(pos + 1 == end || v[pos+1] != m)
-				return pos;
-			pos += 2;
-		}
+		return compareTo(array, 0, prefix.length, prefix, 0, prefix.length) == 0;
 	}
 
 	/**
@@ -349,6 +358,21 @@ public class ByteArrayUtil {
 		// Since rstrip makes sure the last character is not \xff, we can be sure
 		//  we're able to add 1 to it without overflow.
 		copy[copy.length -1] = (byte) (copy[copy.length - 1] + 1);
+		return copy;
+	}
+
+	/**
+	 * Computes the key that would sort immediately after {@code key}.
+	 *  {@code key} must be non-null.
+	 *
+	 * @param key byte array for which next key is to be computed
+	 *
+	 * @return a newly created byte array that would sort immediately after {@code key}
+	*/
+	public static byte[] keyAfter(byte[] key) {
+		byte[] copy = new byte[key.length + 1];
+		System.arraycopy(key, 0, copy, 0, key.length);
+		copy[key.length] = 0x0;
 		return copy;
 	}
 
@@ -395,6 +419,9 @@ public class ByteArrayUtil {
 		return ByteBuffer.wrap(src).order(ByteOrder.LITTLE_ENDIAN).getLong();
 	}
 
+	private static final char[] hexChars =
+	    new char[] { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+
 	/**
 	 * Gets a human readable version of a byte array. The bytes that correspond with
 	 *  ASCII printable characters [32-127) are passed through. Other bytes are
@@ -413,9 +440,25 @@ public class ByteArrayUtil {
 			byte b = val[i];
 			if (b >= 32 && b < 127 && b != '\\') s.append((char)b);
 			else if (b == '\\') s.append("\\\\");
-			else s.append(String.format("\\x%02x", b));
+			else {
+				//use a lookup table here to avoid doing an expensive String.format() call
+				s.append("\\x");
+				int nib = (b & 0xF0) >> 4;
+				s.append(hexChars[nib]);
+				nib = b & 0x0F;
+				s.append(hexChars[nib]);
+			}
 		}
 		return s.toString();
+	}
+
+	static int nullCount(byte[] val) {
+		int nulls = 0;
+		for(int i = 0; i < val.length; i++) {
+			if(val[i] == 0x00)
+				nulls += 1;
+		}
+		return nulls;
 	}
 
 	private ByteArrayUtil() {}

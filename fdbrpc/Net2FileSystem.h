@@ -20,30 +20,41 @@
 
 #ifndef FLOW_NET2FILESYSTEM_H
 #define FLOW_NET2FILESYSTEM_H
+#include <string>
 #pragma once
 
-#include "IAsyncFile.h"
+#include "fdbrpc/IAsyncFile.h"
 
-class Net2FileSystem : public IAsyncFileSystem {
+class Net2FileSystem final : public IAsyncFileSystem {
 public:
-	virtual Future< Reference<class IAsyncFile> > open( std::string filename, int64_t flags, int64_t mode );
 	// Opens a file for asynchronous I/O
+	Future<Reference<class IAsyncFile>> open(const std::string& filename, int64_t flags, int64_t mode) override;
 
-	virtual Future< Void > deleteFile( std::string filename, bool mustBeDurable );
-	// Deletes the given file.  If mustBeDurable, returns only when the file is guaranteed to be deleted even after a power failure.
+	// Deletes the given file. If mustBeDurable, returns only when the file is guaranteed to be deleted even after a
+	// power failure.
+	Future<Void> deleteFile(const std::string& filename, bool mustBeDurable) override;
 
-	//void init();
+	// Returns the time of the last modification of the file.
+	Future<std::time_t> lastWriteTime(const std::string& filename) override;
 
-	Net2FileSystem(double ioTimeout=0.0, std::string fileSystemPath = "");
+	Future<Void> renameFile(std::string const& from, std::string const& to) override;
 
-	virtual ~Net2FileSystem() {}
+	ActorLineageSet& getActorLineageSet() override;
 
-	static void newFileSystem(double ioTimeout=0.0, std::string fileSystemPath = "");
+	// void init();
+	static void stop();
+
+	Net2FileSystem(double ioTimeout = 0.0, const std::string& fileSystemPath = "");
+
+	~Net2FileSystem() override {}
+
+	static void newFileSystem(double ioTimeout = 0.0, const std::string& fileSystemPath = "");
 
 #ifdef __linux__
 	dev_t fileSystemDeviceId;
 	bool checkFileSystem;
 #endif
+	ActorLineageSet actorLineageSet;
 };
 
 #endif

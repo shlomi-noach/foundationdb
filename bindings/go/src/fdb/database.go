@@ -22,14 +22,14 @@
 
 package fdb
 
-/*
- #define FDB_API_VERSION 520
- #include <foundationdb/fdb_c.h>
-*/
+// #define FDB_API_VERSION 700
+// #include <foundationdb/fdb_c.h>
 import "C"
 
 import (
 	"runtime"
+
+	"golang.org/x/xerrors"
 )
 
 // Database is a handle to a FoundationDB database. Database is a lightweight
@@ -86,18 +86,20 @@ func retryable(wrapped func() (interface{}, error), onError func(Error) FutureNi
 	for {
 		ret, e = wrapped()
 
-		/* No error means success! */
+		// No error means success!
 		if e == nil {
 			return
 		}
 
-		ep, ok := e.(Error)
-		if ok {
+		// Check if the error chain contains an
+		// fdb.Error
+		var ep Error
+		if xerrors.As(e, &ep) {
 			e = onError(ep).Get()
 		}
 
-		/* If OnError returns an error, then it's not
-		/* retryable; otherwise take another pass at things */
+		// If OnError returns an error, then it's not
+		// retryable; otherwise take another pass at things
 		if e != nil {
 			return
 		}
@@ -115,6 +117,10 @@ func retryable(wrapped func() (interface{}, error), onError func(Error) FutureNi
 // will recover a panicked Error and either retry the transaction or return the
 // error.
 //
+// The transaction is retried if the error is or wraps a retryable Error.
+// The error is unwrapped with the xerrors.Wrapper. See https://godoc.org/golang.org/x/xerrors#Wrapper
+// for details.
+//
 // Do not return Future objects from the function provided to Transact. The
 // Transaction created by Transact may be finalized at any point after Transact
 // returns, resulting in the cancellation of any outstanding
@@ -125,7 +131,7 @@ func retryable(wrapped func() (interface{}, error), onError func(Error) FutureNi
 // Transaction and Database objects.
 func (d Database) Transact(f func(Transaction) (interface{}, error)) (interface{}, error) {
 	tr, e := d.CreateTransaction()
-	/* Any error here is non-retryable */
+	// Any error here is non-retryable
 	if e != nil {
 		return nil, e
 	}
@@ -155,6 +161,10 @@ func (d Database) Transact(f func(Transaction) (interface{}, error)) (interface{
 // MustGet. ReadTransact will recover a panicked Error and either retry the
 // transaction or return the error.
 //
+// The transaction is retried if the error is or wraps a retryable Error.
+// The error is unwrapped with the xerrors.Wrapper. See https://godoc.org/golang.org/x/xerrors#Wrapper
+// for details.
+//
 // Do not return Future objects from the function provided to ReadTransact. The
 // Transaction created by ReadTransact may be finalized at any point after
 // ReadTransact returns, resulting in the cancellation of any outstanding
@@ -165,7 +175,7 @@ func (d Database) Transact(f func(Transaction) (interface{}, error)) (interface{
 // Transaction, Snapshot and Database objects.
 func (d Database) ReadTransact(f func(ReadTransaction) (interface{}, error)) (interface{}, error) {
 	tr, e := d.CreateTransaction()
-	/* Any error here is non-retryable */
+	// Any error here is non-retryable
 	if e != nil {
 		return nil, e
 	}
@@ -216,7 +226,10 @@ func (d Database) LocalityGetBoundaryKeys(er ExactRange, limit int, readVersion 
 	tr.Options().SetLockAware()
 
 	bk, ek := er.FDBRangeKeys()
-	ffer := KeyRange{append(Key("\xFF/keyServers/"), bk.FDBKey()...), append(Key("\xFF/keyServers/"), ek.FDBKey()...)}
+	ffer := KeyRange{
+		append(Key("\xFF/keyServers/"), bk.FDBKey()...),
+		append(Key("\xFF/keyServers/"), ek.FDBKey()...),
+	}
 
 	kvs, e := tr.Snapshot().GetRange(ffer, RangeOptions{Limit: limit}).GetSliceWithError()
 	if e != nil {

@@ -17,7 +17,7 @@
  KV ranges {(a-b, v0), (c-d, v1), (e-f, v2) ... (y-z, v10)}. With mutation log recorded all along, we can still use
  the simple backup-restore scheme described above on sub keyspaces seperately. Assuming we did record mutation log from
  v0 to vn, that allows us to restore
-  
+
 * Keyspace a-b to any version between v0 and vn
 * Keyspace c-d to any version between v1 and vn
 * Keyspace y-z to any version between v10 and vn
@@ -47,13 +47,15 @@ take the same example
 
 Restoring to version vk (v10 < vk <= vn), needs KV ranges to be restored first and then replaying mutation logs. For
 each KV range (k1-k2, vx) that is restored we need to replay mutation log [(k1-k2, vx+1), .., (k1-k2, vk)]. But, this
-needs scanning complete muation log to get mutaions for k1-k2, that is sub-optimal, for any decent sized database
+needs scanning complete mutation log to get mutations for k1-k2, that is sub-optimal, for any decent sized database
 this will take forever.
 
 Instead looking at restore on key space, we can replay events on version space, that way we need to scan
 mutation log only once. At each version vx,
 * Wait for all the KV ranges recorded before vx to restore first.
 * Replay (a-z, vx), but ignore mutations for the keys that are not yet restored by KV ranges.
+  Because the keys that are not yet restored by KV ranges will eventually be restored at a later version,
+  the mutations on those keys can be safely ignored. 
 
 For the above example, it would look like
 * KV ranges:
@@ -69,16 +71,16 @@ For the above example, it would look like
   		* Wait for all KV ranges recorded before v10 to restore - Everything except (y-z, v10)
   		* Replay (a-x, v10)
     * At v11:
-  		* Nothing to wait
+  		* Wait for key range (y-z, v10) to restore.
   		* Replay (a-z, v11)
     * At vk:
   		* Replay (a-z, vk)
 
-Even though, in the above description logging mutations is shown as continuous task, this is actually devided into
-  two logical parts. During KV ranges are being backedup, we start a mutation log backup in parallel. Until, we complete
+Even though, in the above description logging mutations is shown as continuous task, this is actually divided into
+  two logical parts. During KV ranges are being backed up, we start a mutation log backup in parallel. Until, we complete
   KV range backup and the parallel mutation logs backup, cluster is not in restorable phase. Once these two tasks are
-  completed, now cluster can be restored back to the last version. To be able to restore after even after the KV range
-  backup, we continue to backup mutation logs called differental log backup. With differential backup, we can restore
+  completed, now cluster can be restored back to the last version. To be able to restore even after the KV range
+  backup, we continue to backup mutation logs called differential log backup. With differential backup, we can restore
   to any version since KV range backup completed. It would look like below
 
 ```
@@ -112,5 +114,5 @@ With the above backup scenario, we could restore to any version from c to d or g
 #### Continuous Backup
 
 Instead of going through the pain of monitoring for backup becoming too large and restarting backup, we could just
-have backup running continuously with KVrange task restarting once in a while (with some policy ofcourse). Continuous
-backup is already committed, its not discussed here yet.
+have backup running continuously with KVrange task restarting once in a while (with some policy of course). 
+The code for continuous has already committed. The document will be added in the future.

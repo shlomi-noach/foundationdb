@@ -12,7 +12,6 @@
 .. |reset-func-name| replace:: :meth:`reset <Transaction.reset>`
 .. |reset-func| replace:: :meth:`Transaction.reset`
 .. |cancel-func| replace:: :meth:`Transaction.cancel`
-.. |init-func| replace:: :func:`FDB.init`
 .. |open-func| replace:: :func:`FDB.open`
 .. |on-error-func| replace:: :meth:`Transaction.on_error`
 .. |null-type| replace:: ``nil``
@@ -20,8 +19,24 @@
 .. |error-raise-type| replace:: raise
 .. |future-cancel| replace:: :meth:`Future.cancel`
 .. |max-watches-database-option| replace:: :meth:`Database.options.set_max_watches`
+.. |retry-limit-database-option| replace:: :meth:`Database.options.set_transaction_retry_limit`
+.. |timeout-database-option| replace:: :meth:`Database.options.set_transaction_timeout`
+.. |max-retry-delay-database-option| replace:: :meth:`Database.options.set_transaction_max_retry_delay`
+.. |transaction-size-limit-database-option| replace:: :func:`Database.options.set_transaction_size_limit`
+.. |causal-read-risky-database-option| replace:: :meth:`Database.options.set_transaction_causal_read_risky`
+.. |snapshot-ryw-enable-database-option| replace:: :meth:`Database.options.set_snapshot_ryw_enable`
+.. |snapshot-ryw-disable-database-option| replace:: :meth:`Database.options.set_snapshot_ryw_disable`
+.. |transaction-logging-max-field-length-database-option| replace:: :meth:`Database.options.set_transaction_logging_max_field_length`
 .. |future-type-string| replace:: a :class:`Future`
 .. |read-your-writes-disable-option| replace:: :meth:`Transaction.options.set_read_your_writes_disable`
+.. |retry-limit-transaction-option| replace:: :meth:`Transaction.options.set_retry_limit`
+.. |timeout-transaction-option| replace:: :meth:`Transaction.options.set_timeout`
+.. |max-retry-delay-transaction-option| replace:: :meth:`Transaction.options.set_max_retry_delay`
+.. |size-limit-transaction-option| replace:: :meth:`Transaction.options.set_size_limit`
+.. |snapshot-ryw-enable-transaction-option| replace:: :meth:`Transaction.options.set_snapshot_ryw_enable`
+.. |snapshot-ryw-disable-transaction-option| replace:: :meth:`Transaction.options.set_snapshot_ryw_disable`
+.. |causal-read-risky-transaction-option| replace:: :meth:`Transaction.options.set_causal_read_risky`
+.. |transaction-logging-max-field-length-transaction-option| replace:: :meth:`Transaction.options.set_transaction_logging_max_field_length`
 .. |lazy-iterator-object| replace:: :class:`Enumerator`
 .. |key-meth| replace:: :meth:`Subspace.key`
 .. |directory-subspace| replace:: :class:`DirectorySubspace`
@@ -70,32 +85,22 @@ When you require the ``FDB`` gem, it exposes only one useful method:
 
 .. warning:: |api-version-multi-version-warning|
 
-For API changes between version 14 and |api-version| (for the purpose of porting older programs), see :doc:`release-notes`.
+For API changes between version 14 and |api-version| (for the purpose of porting older programs), see :ref:`release-notes` and :doc:`api-version-upgrade-guide`.
 
 Opening a database
 ==================
 
-After requiring the ``FDB`` gem and selecting an API version, you probably want to open a :class:`Database`. The simplest way of doing this is using :func:`open`::
+After requiring the ``FDB`` gem and selecting an API version, you probably want to open a :class:`Database` using :func:`open`::
 
     require 'fdb'
-    FDB.api_version 510
+    FDB.api_version 700
     db = FDB.open
 
-.. function:: open( cluster_file=nil, db_name="DB" ) -> Database
+.. function:: open( cluster_file=nil ) -> Database
 
-    |fdb-open-blurb|
+    |fdb-open-blurb1|
 
-    .. note:: In this release, db_name must be "DB".
-
-    .. note:: ``fdb.open`` combines the effect of :func:`init`, :func:`create_cluster`, and :meth:`Cluster.open_database`.
-
-.. function:: init() -> nil
-
-    Initializes the FoundationDB API, creating a thread for the FoundationDB client and initializing the client's networking engine. :func:`init` can only be called once. If called subsequently or after :func:`open`, it will raise a ``client_invalid_operation`` error.
-
-.. function:: create_cluster(cluster_file=nil) -> Cluster
-
-    Connects to the cluster specified by :ref:`cluster_file <foundationdb-cluster-file>`, or by a :ref:`default cluster file <default-cluster-file>` if ``cluster_file`` is ``nil``.
+    |fdb-open-blurb2|
 
 .. global:: FDB.options
 
@@ -105,17 +110,27 @@ After requiring the ``FDB`` gem and selecting an API version, you probably want 
 
     .. method:: FDB.options.set_trace_enable(output_directory) -> nil
 
-        |option-trace-enable-blurb|
+       |option-trace-enable-blurb|
 
-        .. warning:: |option-trace-enable-warning|
+       .. warning:: |option-trace-enable-warning|
 
     .. method:: FDB.options.set_trace_max_logs_size(bytes) -> nil
 
-        |option-trace-max-logs-size-blurb|
+       |option-trace-max-logs-size-blurb|
 
     .. method:: FDB.options.set_trace_roll_size(bytes) -> nil
 
-        |option-trace-roll-size-blurb|
+       |option-trace-roll-size-blurb|
+
+    .. method:: FDB.options.set_trace_format(format) -> nil
+
+       |option-trace-format-blurb|
+
+    .. method:: FDB.options.set_trace_clock_source(source) -> nil
+
+       |option-trace-clock-source-blurb|
+
+    .. method:: FDB.options.set_disable_multi_version_client_api() -> nil
 
        |option-disable-multi-version-client-api|
 
@@ -160,23 +175,12 @@ After requiring the ``FDB`` gem and selecting an API version, you probably want 
     .. method :: FDB.options.set_disable_multi_version_client_api() -> nil
 
 
-Cluster objects
-===============
-
-.. class:: Cluster
-
-.. method:: Cluster.open_database(name="DB") -> Database
-
-    Opens a database with the given name.
-
-    .. note:: In this release, name **must** be "DB".
-
 .. _api-ruby-keys:
 
 Keys and values
 ===============
 
-|keys-values-blurb| 
+|keys-values-blurb|
 
 |keys-values-other-types-blurb|
 
@@ -209,21 +213,21 @@ Key selectors
 
     Creates a key selector with the given reference key, equality flag, and offset. It is usually more convenient to obtain a key selector with one of the following methods:
 
-        .. classmethod:: last_less_than(key) -> KeySelector
+    .. classmethod:: last_less_than(key) -> KeySelector
 
-            Returns a key selector referencing the last (greatest) key in the database less than the specified key.
+        Returns a key selector referencing the last (greatest) key in the database less than the specified key.
 
-        .. classmethod:: KeySelector.last_less_or_equal(key) -> KeySelector
+    .. classmethod:: KeySelector.last_less_or_equal(key) -> KeySelector
 
-            Returns a key selector referencing the last (greatest) key less than, or equal to, the specified key.
+        Returns a key selector referencing the last (greatest) key less than, or equal to, the specified key.
 
-        .. classmethod:: KeySelector.first_greater_than(key) -> KeySelector
+    .. classmethod:: KeySelector.first_greater_than(key) -> KeySelector
 
-            Returns a key selector referencing the first (least) key greater than the specified key.
+        Returns a key selector referencing the first (least) key greater than the specified key.
 
-        .. classmethod:: KeySelector.first_greater_or_equal(key) -> KeySelector
+    .. classmethod:: KeySelector.first_greater_or_equal(key) -> KeySelector
 
-            Returns a key selector referencing the first key greater than, or equal to, the specified key.
+        Returns a key selector referencing the first key greater than, or equal to, the specified key.
 
 .. method:: KeySelector.+(offset) -> KeySelector
 
@@ -279,16 +283,16 @@ A |database-blurb1| |database-blurb2|
 
     The ``options`` hash accepts the following optional parameters:
 
-        ``:limit``
-            Only the first ``limit`` keys (and their values) in the range will be returned.
+    ``:limit``
+        Only the first ``limit`` keys (and their values) in the range will be returned.
 
-        ``:reverse``
-            If ``true``, then the keys in the range will be returned in reverse order.
+    ``:reverse``
+        If ``true``, then the keys in the range will be returned in reverse order. Reading ranges in reverse is supported natively by the database and should have minimal extra cost.
 
-            If ``:limit`` is also specified, the *last* ``limit`` keys in the range will be returned in reverse order.
+        If ``:limit`` is also specified, the *last* ``limit`` keys in the range will be returned in reverse order.
 
-        ``:streaming_mode``
-            A valid |streaming-mode|, which provides a hint to FoundationDB about how to retrieve the specified range. This option should generally not be specified, allowing FoundationDB to retrieve the full range very efficiently.
+    ``:streaming_mode``
+        A valid |streaming-mode|, which provides a hint to FoundationDB about how to retrieve the specified range. This option should generally not be specified, allowing FoundationDB to retrieve the full range very efficiently.
 
 .. method:: Database.get_range(begin, end, options={}) {|kv| block } -> nil
 
@@ -370,6 +374,38 @@ Database options
 
     |option-datacenter-id-blurb|
 
+.. method:: Database.options.set_transaction_timeout(timeout) -> nil
+
+    |option-db-tr-timeout-blurb|
+
+.. method:: Database.options.set_transaction_retry_limit(retry_limit) -> nil
+
+    |option-db-tr-retry-limit-blurb|
+
+.. method:: Database.options.set_transaction_max_retry_delay(delay_limit) -> nil
+
+    |option-db-tr-max-retry-delay-blurb|
+
+.. method:: Database.options.set_transaction_size_limit(size_limit) -> nil
+
+    |option-db-tr-size-limit-blurb|
+
+.. method:: Database.options.set_transaction_causal_read_risky() -> nil
+
+    |option-db-causal-read-risky-blurb|
+
+.. method:: Database.options.set_transaction_logging_max_field_length(size_limit) -> nil
+
+    |option-db-tr-transaction-logging-max-field-length-blurb|
+
+.. method:: Database.options.set_snapshot_ryw_enable() -> nil
+
+    |option-db-snapshot-ryw-enable-blurb|
+
+.. method:: Database.options.set_snapshot_ryw_disable() -> nil
+
+    |option-db-snapshot-ryw-disable-blurb|
+
 Transaction objects
 ===================
 
@@ -421,16 +457,16 @@ Reading data
 
     The ``options`` hash accepts the following optional parameters:
 
-        ``:limit``
-            Only the first ``limit`` keys (and their values) in the range will be returned.
+    ``:limit``
+        Only the first ``limit`` keys (and their values) in the range will be returned.
 
-        ``:reverse``
-            If true, then the keys in the range will be returned in reverse order.
+    ``:reverse``
+        If ``true``, then the keys in the range will be returned in reverse order. Reading ranges in reverse is supported natively by the database and should have minimal extra cost.
 
-            If ``:limit`` is also specified, the *last* ``limit`` keys in the range will be returned in reverse order.
+        If ``:limit`` is also specified, the *last* ``limit`` keys in the range will be returned in reverse order.
 
-        ``:streaming_mode``
-            A valid |streaming-mode|, which provides a hint to FoundationDB about how the returned enumerable is likely to be used.  The default is ``:iterator``.
+    ``:streaming_mode``
+        A valid |streaming-mode|, which provides a hint to FoundationDB about how the returned enumerable is likely to be used.  The default is ``:iterator``.
 
 .. method:: Transaction.get_range(begin, end, options={}) {|kv| block } -> nil
 
@@ -483,9 +519,9 @@ Snapshot reads
 
     Like :meth:`Transaction.get_range_start_with`, but as a snapshot read.
 
-.. method:: Transaction.snapshot.get_read_version() -> Version
+.. method:: Transaction.snapshot.get_read_version() -> Int64Future
 
-    Identical to :meth:`Transaction.get_read_version` (since snapshot and serializable reads use the same read version).
+    Identical to :meth:`Transaction.get_read_version` (since snapshot and strictly serializable reads use the same read version).
 
 Writing data
 ------------
@@ -498,9 +534,9 @@ Writing data
 
 .. method:: Transaction.[]=(key, value) -> nil
 
-    Alias of :meth:`Transaction.set`. 
+    Alias of :meth:`Transaction.set`.
 
-    .. note:: Although the above method returns nil, assignments in Ruby evaluate to the value assigned, so the expression ``tr[key] = value`` will return ``value``. 
+    .. note:: Although the above method returns nil, assignments in Ruby evaluate to the value assigned, so the expression ``tr[key] = value`` will return ``value``.
 
 .. method:: Transaction.clear(key) -> nil
 
@@ -510,11 +546,15 @@ Writing data
 
     Removes all keys ``k`` such that ``begin <= k < end``, and their associated values. |immediate-return|
 
+    |transaction-clear-range-blurb|
+
     .. note:: Unlike in the case of :meth:`Transaction.get_range`, ``begin`` and ``end`` must be keys (:class:`String` or :class:`Key`), not :class:`KeySelector`\ s.  (Resolving arbitrary key selectors would prevent this method from returning immediately, introducing concurrency issues.)
 
 .. method:: Transaction.clear_range_start_with(prefix) -> nil
 
     Removes all the keys ``k`` such that ``k.start_with? prefix``, and their associated values. |immediate-return|
+
+    |transaction-clear-range-blurb|
 
 .. _api-ruby-transaction-atomic-operations:
 
@@ -555,6 +595,10 @@ In each of the methods below, ``param`` should be a string appropriately packed 
 
     |atomic-xor|
 
+.. method:: Transaction.compare_and_clear(key, param) -> nil
+
+    |atomic-compare-and-clear|
+
 .. method:: Transaction.max(key, param) -> nil
 
     |atomic-max1|
@@ -564,7 +608,7 @@ In each of the methods below, ``param`` should be a string appropriately packed 
 .. method:: Transaction.byte_max(key, param) -> nil
 
     |atomic-byte-max|
-    
+
 .. method:: Transaction.min(key, param) -> nil
 
     |atomic-min1|
@@ -574,7 +618,7 @@ In each of the methods below, ``param`` should be a string appropriately packed 
 .. method:: Transaction.byte_min(key, param) -> nil
 
     |atomic-byte-min|
-    
+
 .. method:: Transaction.set_versionstamped_key(key, param) -> nil
 
     |atomic-set-versionstamped-key-1|
@@ -582,8 +626,6 @@ In each of the methods below, ``param`` should be a string appropriately packed 
     |atomic-versionstamps-1|
 
     |atomic-versionstamps-2|
-
-    |atomic-set-versionstamped-key-2|
 
     .. warning :: |atomic-versionstamps-tuple-warning-key|
 
@@ -684,7 +726,7 @@ Most applications should use the read version that FoundationDB determines autom
 
     |infrequent| Sets the database version that the transaction will read from the database.  The database cannot guarantee causal consistency if this method is used (the transaction's reads will be causally consistent only if the provided read version has that property).
 
-.. method:: Transaction.get_read_version() -> Version
+.. method:: Transaction.get_read_version() -> Int64Future
 
     |infrequent| Returns the transaction's read version.
 
@@ -692,9 +734,26 @@ Most applications should use the read version that FoundationDB determines autom
 
     |infrequent| |transaction-get-committed-version-blurb|
 
-.. method:: Transaction.get_verionstamp() -> String
+.. method:: Transaction.get_versionstamp() -> String
 
     |infrequent| |transaction-get-versionstamp-blurb|
+
+Transaction misc functions
+--------------------------
+
+.. method:: Transaction.get_estimated_range_size_bytes(begin_key, end_key) -> Int64Future
+
+    Gets the estimated byte size of the given key range. Returns a :class:`Int64Future`.
+    .. note:: The estimated size is calculated based on the sampling done by FDB server. The sampling algorithm works roughly in this way: the larger the key-value pair is, the more likely it would be sampled and the more accurate its sampled size would be. And due to that reason it is recommended to use this API to query against large ranges for accuracy considerations. For a rough reference, if the returned size is larger than 3MB, one can consider the size to be accurate.
+
+.. method:: Transaction.get_range_split_points(begin_key, end_key, chunk_size) -> FutureKeyArray
+
+    Gets a list of keys that can split the given range into (roughly) equally sized chunks based on ``chunk_size``. Returns a :class:`FutureKeyArray`.
+    .. note:: The returned split points contain the start key and end key of the given range
+
+.. method:: Transaction.get_approximate_size() -> Int64Future
+
+    |transaction-get-approximate-size-blurb|. Returns a :class:`Int64Future`.
 
 Transaction options
 -------------------
@@ -767,6 +826,10 @@ Transaction options
 
     |option-set-max-retry-delay-blurb|
 
+.. method:: Transaction.options.set_size_limit() -> nil
+
+    |option-set-size-limit-blurb|
+
 .. method:: Transaction.options.set_timeout() -> nil
 
     |option-set-timeout-blurb1|
@@ -775,9 +838,17 @@ Transaction options
 
     |option-set-timeout-blurb3|
 
-.. method:: Transaction.options.set_durability_dev_null_is_web_scale() -> nil
+.. method:: Transaction.options.set_transaction_logging_max_field_length(size_limit) -> nil
 
-    |option-durability-dev-null-is-web-scale-blurb|
+    |option-set-transaction-logging-max-field-length-blurb|
+
+.. method:: Transaction.options.set_debug_transaction_identifier(id_string) -> nil
+
+    |option-set-debug-transaction-identifier|
+
+.. method:: Transaction.options.set_log_transaction() -> nil
+
+    |option-set-log-transaction|
 
 .. _transact:
 
@@ -868,13 +939,15 @@ All future objects are a subclass of the :class:`Future` type.
 
             Yields ``self`` to the given block when the future object is ready. If the future object is ready at the time :meth:`on_ready` is called, the block may be called immediately in the current thread (although this behavior is not guaranteed). Otherwise, the call may be delayed and take place on the thread with which the client was initialized. Therefore, the block is responsible for any needed thread synchronization (and/or for posting work to your application's event loop, thread pool, etc., as may be required by your application's architecture).
 
+            .. note:: This function guarantees the callback will be executed **at most once**.
+
             .. warning:: |fdb-careful-with-callbacks-blurb|
 
         .. method:: Future.cancel() -> nil
 
             |future-cancel-blurb|
 
-        .. classmethod:: Future.wait_for_any(*futures) -> Fixnum
+        .. classmethod:: Future.wait_for_any(\*futures) -> Fixnum
 
             Does not return until at least one of the given future objects is ready. Returns the index in the parameter list of a ready future object.
 
@@ -888,7 +961,7 @@ Asynchronous methods return one of the following subclasses of :class:`Future`:
 
     An implementation quirk of :class:`Value` is that it will never evaluate to ``false``, even if its value is ``nil``. It is important to use ``if value.nil?`` rather than ``if ~value`` when checking to see if a key was not present in the database.
 
-.. class:: Version
+.. class:: Int64Future
 
     This type is a future :class:`Integer` object. Objects of this type respond to the same methods as objects of type :class:`Integer`, and may be passed to any method that expects a :class:`Integer`.
 
@@ -903,6 +976,7 @@ Asynchronous methods return one of the following subclasses of :class:`Future`:
     .. method:: FutureNil.wait() -> nil
 
         For a :class:`FutureNil` object returned by :meth:`Transaction.commit` or :meth:`Transaction.on_error`, you must call :meth:`FutureNil.wait`, which will return ``nil`` if the operation succeeds or raise an :exc:`FDB::Error` if an error occurred. Failure to call :meth:`FutureNil.wait` on a returned :class:`FutureNil` object means that any potential errors raised by the asynchronous operation that returned the object *will not be seen*, and represents a significant error in your code.
+
 
 .. _ruby streaming mode:
 
@@ -987,19 +1061,19 @@ In the FoundationDB Ruby API, a tuple is an :class:`Enumerable` of elements of t
 | Unicode string       | Any value ``v`` where ``v.kind_of? String == true`` and ``v.encoding`` is   | ``String`` with encoding ``Encoding::UTF_8``                                 |
 |                      | ``Encoding::UTF_8``                                                         |                                                                              |
 +----------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------------+
-| 64-bit signed integer| Any value ``v`` where ``v.kind_of? Integer == true`` and ``-2**64+1 <= v <= | ``Fixnum`` or ``Bignum`` (depending on the magnitude of the value)           |
-|                      | 2**64-1``                                                                   |                                                                              |
+| Integer              | Any value ``v`` where ``v.kind_of? Integer == true`` and                    | ``Integer``                                                                  |
+|                      | ``-2**2040+1 <= v <= 2**2040-1``                                            |                                                                              |
 +----------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------------+
 | Floating point number| Any value ``v`` where ``v.kind_of? FDB::Tuple::SingleFloat`` where          | :class:`FDB::Tuple::SingleFloat`                                             |
 | (single-precision)   | ``v.value.kind_of? Float`` and ``v.value`` fits inside an IEEE 754 32-bit   |                                                                              |
 |                      | floating-point number.                                                      |                                                                              |
 +----------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------------+
-| Floating point number| Any value ``v`` where ``v.kind_of? Float``                                  | ``Float``                                                                    | 
-| (double-precision)   |                                                                             |                                                                              | 
+| Floating point number| Any value ``v`` where ``v.kind_of? Float``                                  | ``Float``                                                                    |
+| (double-precision)   |                                                                             |                                                                              |
 +----------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------------+
 | Boolean              | Any value ``v`` where ``v.kind_of? Boolean``                                | ``Boolean``                                                                  |
 +----------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------------+
-| UUID                 | Any value ``v`` where ``v.kind_of? FDB::Tuple::UUID`` where                 | :class:`FDB::Tuple::UUID`                                                    | 
+| UUID                 | Any value ``v`` where ``v.kind_of? FDB::Tuple::UUID`` where                 | :class:`FDB::Tuple::UUID`                                                    |
 |                      | ``v.data.kind_of? String`` and ``v.data.encoding`` is ``Encoding::BINARY``  |                                                                              |
 |                      | and ``v.data.length == 16``                                                 |                                                                              |
 +----------------------+-----------------------------------------------------------------------------+------------------------------------------------------------------------------+
@@ -1215,7 +1289,7 @@ Directories
 .. method:: DirectoryLayer.exists?(db_or_tr, path) -> bool
 
     |directory-exists-blurb|
-    
+
 .. method:: DirectoryLayer.layer() -> String
 
     |directory-get-layer-blurb|
